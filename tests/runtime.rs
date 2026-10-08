@@ -281,11 +281,11 @@ fn retained_descriptor_refers_to_original_directory_after_rename() {
         b"invalid endpoint in original directory",
     )
     .unwrap();
+    let pinned = rustix::fs::fstat(&directory).unwrap();
     assert!(matches!(
         directory.validate_endpoints(),
         Err(RuntimeError::UnsafePath { .. })
     ));
-    let pinned = rustix::fs::fstat(&directory).unwrap();
     assert_eq!(pinned.st_ino, fs::metadata(&moved).unwrap().ino());
     assert_ne!(
         pinned.st_ino,
