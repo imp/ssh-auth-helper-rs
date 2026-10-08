@@ -1,7 +1,21 @@
-//! Runtime path discovery. Filesystem ownership and permission validation is
-//! deliberately separate; these paths alone do not authorize binding sockets.
+//! Runtime path discovery and private-directory preparation. Binding, lifetime
+//! locking, and endpoint recovery are separate startup responsibilities.
 
+use std::collections::VecDeque;
 use std::ffi::OsStr;
+use std::os::fd::AsFd;
+use std::os::fd::BorrowedFd;
+use std::os::fd::OwnedFd;
+
+use camino::Utf8Component;
+use rustix::fs;
+use rustix::fs::AtFlags;
+use rustix::fs::FileType;
+use rustix::fs::Mode;
+use rustix::fs::OFlags;
+use rustix::fs::Stat;
+use rustix::io::Errno;
+use tokio::net::UnixStream;
 
 use super::*;
 
@@ -9,6 +23,7 @@ use super::*;
 const MAX_SOCKET_PATH_BYTES: usize = 103;
 #[cfg(not(target_os = "macos"))]
 const MAX_SOCKET_PATH_BYTES: usize = 107;
+const MAX_ANCESTOR_SYMLINKS: usize = 40;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimePaths {
@@ -73,6 +88,285 @@ impl RuntimePaths {
     }
 }
 
+/// An opened, validated runtime directory. Preparing it neither binds sockets
+/// nor proves daemon readiness. The retained descriptor anchors later startup work.
+#[derive(Debug)]
+pub struct RuntimeDirectory {
+    paths: RuntimePaths,
+    descriptor: OwnedFd,
+    uid: u32,
+}
+
+impl RuntimeDirectory {
+    /// Open a safe directory, creating only its final component if missing.
+    /// Existing objects are checked without changing their modes or contents.
+    ///
+    /// # Errors
+    /// Rejects unsafe ancestors, directory aliases, ownership, modes, and endpoint
+    /// types. Propagates filesystem errors, including missing parents.
+    pub fn prepare(paths: RuntimePaths) -> Result<Self, RuntimeError> {
+        let uid = rustix::process::getuid().as_raw();
+        let parent_path = paths.directory.parent().ok_or(RuntimeError::InvalidPath(
+            "runtime directory must have a final component",
+        ))?;
+        let name = paths
+            .directory
+            .file_name()
+            .ok_or(RuntimeError::InvalidPath(
+                "runtime directory must have a final component",
+            ))?;
+        let parent = open_trusted_parent(parent_path, uid)?;
+        match fs::mkdirat(&parent, name, Mode::RWXU) {
+            Ok(()) | Err(Errno::EXIST) => {}
+            Err(source) => {
+                return Err(filesystem_error(
+                    &paths.directory,
+                    "create directory",
+                    source,
+                ));
+            }
+        }
+        let descriptor = open_directory(&parent, name, &paths.directory)?;
+        let metadata = fs::fstat(&descriptor)
+            .map_err(|source| filesystem_error(&paths.directory, "inspect directory", source))?;
+        validate_owned_object(
+            &metadata,
+            FileType::Directory,
+            Mode::RWXU,
+            uid,
+            &paths.directory,
+        )?;
+        let directory = Self {
+            paths,
+            descriptor,
+            uid,
+        };
+        directory.validate_endpoints()?;
+        Ok(directory)
+    }
+
+    pub fn paths(&self) -> &RuntimePaths {
+        &self.paths
+    }
+
+    /// Check existing endpoint names without following links or deleting objects.
+    /// This does not determine whether a socket has a live listener.
+    ///
+    /// # Errors
+    /// Rejects unsafe endpoint ownership, modes, and types, or metadata errors.
+    pub fn validate_endpoints(&self) -> Result<(), RuntimeError> {
+        for (name, kind) in [
+            ("agent.sock", FileType::Socket),
+            ("control.sock", FileType::Socket),
+            ("daemon.lock", FileType::RegularFile),
+        ] {
+            let path = self.paths.directory.join(name);
+            match fs::statat(&self.descriptor, name, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(metadata) => validate_owned_object(
+                    &metadata,
+                    kind,
+                    Mode::RUSR | Mode::WUSR,
+                    self.uid,
+                    &path,
+                )?,
+                Err(Errno::NOENT) => {}
+                Err(source) => return Err(filesystem_error(&path, "inspect endpoint", source)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Authorize a connected local peer by UID, independently of PID or GID.
+    ///
+    /// # Errors
+    /// Rejects a foreign UID or failure to retrieve kernel peer credentials.
+    pub fn authorize_peer(&self, stream: &UnixStream) -> Result<(), RuntimeError> {
+        authorize_peer_uid(stream, self.uid)
+    }
+}
+
+impl AsFd for RuntimeDirectory {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.descriptor.as_fd()
+    }
+}
+
+fn authorize_peer_uid(stream: &UnixStream, expected: u32) -> Result<(), RuntimeError> {
+    let actual = stream
+        .peer_cred()
+        .map_err(RuntimeError::PeerCredentials)?
+        .uid();
+    if actual != expected {
+        return Err(RuntimeError::PeerUid { expected, actual });
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+enum AncestorComponent {
+    Root,
+    Parent,
+    Name(String),
+}
+
+fn ancestor_components(path: &Utf8Path) -> VecDeque<AncestorComponent> {
+    path.components()
+        .filter_map(|component| match component {
+            Utf8Component::RootDir => Some(AncestorComponent::Root),
+            Utf8Component::ParentDir => Some(AncestorComponent::Parent),
+            Utf8Component::Normal(name) => Some(AncestorComponent::Name(name.to_owned())),
+            Utf8Component::CurDir => None,
+            Utf8Component::Prefix(_) => unreachable!("only Unix paths are supported"),
+        })
+        .collect()
+}
+
+fn open_trusted_parent(path: &Utf8Path, uid: u32) -> Result<OwnedFd, RuntimeError> {
+    let root_path = Utf8Path::new("/");
+    let root = open_directory(fs::CWD, "/", root_path)?;
+    let metadata = fs::fstat(&root)
+        .map_err(|source| filesystem_error(root_path, "inspect ancestor", source))?;
+    validate_ancestor(&metadata, uid, root_path)?;
+    let mut stack = vec![(root, root_path.to_owned())];
+    let mut pending = ancestor_components(path);
+    let mut followed = 0;
+    while let Some(component) = pending.pop_front() {
+        match component {
+            AncestorComponent::Root => stack.truncate(1),
+            AncestorComponent::Parent => {
+                if stack.len() > 1 {
+                    stack.pop();
+                }
+            }
+            AncestorComponent::Name(name) => {
+                let (parent, parent_path) = stack.last().expect("root descriptor is retained");
+                let candidate = parent_path.join(&name);
+                let metadata = fs::statat(parent, name.as_str(), AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(|source| filesystem_error(&candidate, "inspect ancestor", source))?;
+                if FileType::from_raw_mode(metadata.st_mode) == FileType::Symlink {
+                    if metadata.st_uid != 0 {
+                        return Err(unsafe_path(
+                            &candidate,
+                            "ancestor symlink must be root-owned",
+                        ));
+                    }
+                    followed += 1;
+                    if followed > MAX_ANCESTOR_SYMLINKS {
+                        return Err(unsafe_path(&candidate, "too many ancestor symlinks"));
+                    }
+                    let target =
+                        fs::readlinkat(parent, name.as_str(), Vec::new()).map_err(|source| {
+                            filesystem_error(&candidate, "read ancestor symlink", source)
+                        })?;
+                    let target = target.to_str().map_err(|_| {
+                        unsafe_path(&candidate, "ancestor symlink target must be UTF-8")
+                    })?;
+                    let after = fs::statat(parent, name.as_str(), AtFlags::SYMLINK_NOFOLLOW)
+                        .map_err(|source| {
+                            filesystem_error(&candidate, "reinspect ancestor symlink", source)
+                        })?;
+                    if metadata.st_dev != after.st_dev
+                        || metadata.st_ino != after.st_ino
+                        || after.st_uid != 0
+                        || FileType::from_raw_mode(after.st_mode) != FileType::Symlink
+                    {
+                        return Err(unsafe_path(
+                            &candidate,
+                            "ancestor symlink changed during inspection",
+                        ));
+                    }
+                    let mut target_components = ancestor_components(Utf8Path::new(target));
+                    target_components.append(&mut pending);
+                    pending = target_components;
+                } else {
+                    let descriptor = open_directory(parent, &name, &candidate)?;
+                    let metadata = fs::fstat(&descriptor).map_err(|source| {
+                        filesystem_error(&candidate, "inspect opened ancestor", source)
+                    })?;
+                    validate_ancestor(&metadata, uid, &candidate)?;
+                    stack.push((descriptor, candidate));
+                }
+            }
+        }
+    }
+    Ok(stack.pop().expect("root descriptor is retained").0)
+}
+
+fn open_directory<Fd: AsFd>(
+    parent: Fd,
+    name: &str,
+    path: &Utf8Path,
+) -> Result<OwnedFd, RuntimeError> {
+    fs::openat(
+        parent,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|source| filesystem_error(path, "open directory without following links", source))
+}
+
+fn validate_ancestor(metadata: &Stat, uid: u32, path: &Utf8Path) -> Result<(), RuntimeError> {
+    if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory {
+        return Err(unsafe_path(path, "ancestor must be a directory"));
+    }
+    if metadata.st_uid != 0 && metadata.st_uid != uid {
+        return Err(unsafe_path(
+            path,
+            "ancestor must belong to root or the current user",
+        ));
+    }
+    let mode = Mode::from_raw_mode(metadata.st_mode).bits();
+    let shared_temporary_directory = metadata.st_uid == 0 && mode & 0o1000 != 0;
+    if mode & 0o022 != 0 && !shared_temporary_directory {
+        return Err(unsafe_path(
+            path,
+            "writable ancestor must be root-owned and sticky",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_owned_object(
+    metadata: &Stat,
+    kind: FileType,
+    mode: Mode,
+    uid: u32,
+    path: &Utf8Path,
+) -> Result<(), RuntimeError> {
+    if FileType::from_raw_mode(metadata.st_mode) != kind {
+        return Err(unsafe_path(path, "unexpected filesystem object type"));
+    }
+    if metadata.st_uid != uid {
+        return Err(unsafe_path(
+            path,
+            "filesystem object must belong to the current user",
+        ));
+    }
+    if Mode::from_raw_mode(metadata.st_mode).bits() & 0o7777 != mode.bits() {
+        return Err(unsafe_path(
+            path,
+            "incorrect permissions or special mode bits",
+        ));
+    }
+    Ok(())
+}
+
+fn unsafe_path(path: &Utf8Path, reason: &'static str) -> RuntimeError {
+    RuntimeError::UnsafePath {
+        path: path.to_owned(),
+        reason,
+    }
+}
+
+fn filesystem_error(path: &Utf8Path, operation: &'static str, source: Errno) -> RuntimeError {
+    RuntimeError::Filesystem {
+        path: path.to_owned(),
+        operation,
+        source,
+    }
+}
+
 fn default_directory() -> Utf8PathBuf {
     let uid = rustix::process::getuid();
     Utf8PathBuf::from(format!("/tmp/ssh-auth-helper-{uid}"))
@@ -116,6 +410,22 @@ pub enum RuntimeError {
     InvalidPath(&'static str),
     #[error("socket path {path} exceeds the platform limit of {maximum} bytes")]
     SocketPathTooLong { path: Utf8PathBuf, maximum: usize },
+    #[error("unsafe runtime path {path}: {reason}")]
+    UnsafePath {
+        path: Utf8PathBuf,
+        reason: &'static str,
+    },
+    #[error("cannot {operation} at {path}: {source}")]
+    Filesystem {
+        path: Utf8PathBuf,
+        operation: &'static str,
+        #[source]
+        source: Errno,
+    },
+    #[error("cannot retrieve local peer credentials: {0}")]
+    PeerCredentials(#[source] std::io::Error),
+    #[error("local peer UID {actual} does not match helper UID {expected}")]
+    PeerUid { expected: u32, actual: u32 },
 }
 
 #[cfg(test)]
@@ -161,5 +471,16 @@ mod tests {
             RuntimePaths::with_dir(format!("/{}", "界".repeat(40)).into()),
             Err(RuntimeError::SocketPathTooLong { .. })
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn kernel_peer_uid_is_checked_against_expected_user() {
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let uid = rustix::process::getuid().as_raw();
+        authorize_peer_uid(&stream, uid).unwrap();
+        let foreign = if uid == 0 { 1 } else { 0 };
+        assert!(
+            matches!(authorize_peer_uid(&stream, foreign), Err(RuntimeError::PeerUid { expected, actual }) if expected == foreign && actual == uid)
+        );
     }
 }

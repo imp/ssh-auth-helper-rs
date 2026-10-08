@@ -1,6 +1,7 @@
 //! Foundation for a per-user forwarded SSH agent proxy.
 //!
-//! The current binary provides socket-path discovery. Daemon serving,
+//! The current binary provides socket-path discovery. The library also offers
+//! private-directory preparation and same-user peer authorization. Daemon serving,
 //! registration, health checks, and relaying are not implemented yet.
 
 use camino::Utf8Path;
