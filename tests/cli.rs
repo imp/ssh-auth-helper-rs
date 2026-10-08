@@ -1,9 +1,51 @@
-use std::{ffi::OsStr, os::unix::ffi::OsStrExt, process::Command};
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
+use std::process::Command;
 
 fn binary() -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ssh-auth-helper"));
-    command.env_remove("XDG_RUNTIME_DIR");
-    command
+    Command::new(env!("CARGO_BIN_EXE_ssh-auth-helper"))
+}
+
+#[test]
+fn hidden_xdg_option_selects_helper_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = binary()
+        .arg("socket-path")
+        .arg("--xdg-runtime-dir")
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        output.stdout,
+        format!(
+            "{}\n",
+            dir.path().join("ssh-auth-helper/agent.sock").display()
+        )
+        .as_bytes()
+    );
+    assert!(output.stderr.is_empty());
+    assert!(!dir.path().join("ssh-auth-helper").exists());
+}
+
+#[test]
+fn explicit_directory_overrides_non_utf8_xdg_option() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = dir.path().join("helper");
+    let output = binary()
+        .arg("--xdg-runtime-dir")
+        .arg(OsStr::from_bytes(b"/tmp/\xff"))
+        .arg("--runtime-dir")
+        .arg(&runtime)
+        .arg("socket-path")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        output.stdout,
+        format!("{}\n", runtime.join("agent.sock").display()).as_bytes()
+    );
+    assert!(output.stderr.is_empty());
 }
 
 #[test]
