@@ -52,7 +52,7 @@ impl Server {
         )
     }
 
-    async fn ready(&mut self, paths: &RuntimePaths) -> control::Hello {
+    async fn ready(&mut self, paths: &RuntimePaths) -> control::HelloResponse {
         let result = control::wait_ready(paths, Instant::now() + Duration::from_secs(5)).await;
         if result.is_err() {
             let _ = self.0.kill();
@@ -71,7 +71,7 @@ impl Server {
 
     fn stop(&mut self, success: bool) {
         rustix::process::kill_process(
-            rustix::process::Pid::from_raw(self.0.id() as i32).unwrap(),
+            rustix::process::Pid::from_raw(i32::try_from(self.0.id()).unwrap()).unwrap(),
             rustix::process::Signal::TERM,
         )
         .unwrap();
@@ -336,25 +336,38 @@ async fn control_errors_and_stalled_peers_do_not_block_readiness() {
     let hello = server.ready(&paths).await;
     for (input, code) in [
         (
-            "{\"version\":2,\"id\":\"v\",\"op\":\"hello\"}\n",
-            "unsupported_version",
+            "{\"jsonrpc\":\"3.0\",\"id\":\"v\",\"method\":\"hello\"}\n",
+            -32600,
         ),
         (
-            "{\"version\":1,\"id\":\"o\",\"op\":\"register\"}\n",
-            "unknown_operation",
+            "{\"jsonrpc\":\"2.0\",\"id\":\"o\",\"method\":\"register\"}\n",
+            -32601,
         ),
     ] {
         assert_eq!(request(&paths, input).unwrap()["error"]["code"], code);
     }
-    for input in [
-        "not-json\n",
-        "{\"version\":1,\"id\":\"\",\"op\":\"hello\"}\n",
-        "{\"version\":1,\"id\":\"a\",\"op\":\"hello\",\"x\":0}\n",
-        "{\"version\":1,\"id\":\"a\",\"id\":\"b\",\"op\":\"hello\"}\n",
-        "partial",
-        "{\"version\":1",
+    for (input, code) in [
+        ("not-json\n", -32700),
+        (
+            "{\"jsonrpc\":\"2.0\",\"id\":\"\",\"method\":\"hello\"}\n",
+            -32600,
+        ),
+        (
+            "{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"method\":\"hello\",\"x\":0}\n",
+            -32600,
+        ),
+        (
+            "{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"id\":\"b\",\"method\":\"hello\"}\n",
+            -32600,
+        ),
+        ("partial", -32700),
+        ("{\"jsonrpc\":\"2.0\"", -32700),
+        (
+            "{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"method\":\"hello\",\"params\":{\"unexpected\":0}}\n",
+            -32602,
+        ),
     ] {
-        assert!(request(&paths, input).is_none());
+        assert_eq!(request(&paths, input).unwrap()["error"]["code"], code);
     }
     let mut stalled = UnixStream::connect(paths.control()).unwrap();
     stalled.write_all(b"{").unwrap();
@@ -384,8 +397,8 @@ async fn fragmented_and_sequential_hello_requests_work_on_one_connection() {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     for id in ["one", "two"] {
         for part in [
-            "{\"version\":1,",
-            "\"op\":\"hello\",\"id\":",
+            "{\"jsonrpc\":\"2.0\",",
+            "\"method\":\"hello\",\"id\":",
             &format!("\"{id}\"}}\n"),
         ] {
             stream.write_all(part.as_bytes()).unwrap();
@@ -409,7 +422,7 @@ async fn crlf_and_final_eof_requests_work_and_preserve_escaped_cr() {
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     stream
-        .write_all(b"{\"version\":1,\"id\":\"one\\r\",\"op\":\"hello\"}\r\n{\"version\":1,\"id\":\"two\",\"op\":\"hello\"}")
+        .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":\"one\\r\",\"method\":\"hello\"}\r\n{\"jsonrpc\":\"2.0\",\"id\":\"two\",\"method\":\"hello\"}")
         .unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
     let mut reader = BufReader::new(stream);
@@ -442,7 +455,7 @@ async fn readiness_accepts_crlf_and_a_final_reply_at_eof() {
             reader.read_line(&mut line).await.unwrap();
             let request: Value = serde_json::from_str(&line).unwrap();
             let reply = serde_json::json!({
-                "version": 1,
+                "jsonrpc": "2.0",
                 "id": request["id"],
                 "result": {"instance": instance, "supported_versions": [1], "ready": true, "endpoints": endpoints}
             });
@@ -467,7 +480,7 @@ async fn readiness_rejects_an_incompatible_live_server_without_waiting_for_takeo
         use tokio::io::AsyncWriteExt;
         let (mut stream, _) = listener.accept().await.unwrap();
         stream
-            .write_all(b"{\"version\":2,\"id\":\"wrong\",\"result\":null}\n")
+            .write_all(b"{\"jsonrpc\":\"3.0\",\"id\":\"wrong\",\"result\":null}\n")
             .await
             .unwrap();
     });
@@ -498,7 +511,7 @@ mod privileged {
         for path in [paths.agent(), paths.control()] {
             mode(path, 0o666);
             let output = Command::new("python3").arg("-c")
-                .arg("import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect(sys.argv[1]);\ntry:\n s.sendall(b'{\"version\":1,\"id\":\"foreign\",\"op\":\"hello\"}\\n'); data=s.recv(4096); assert data == b'', data\nexcept (BrokenPipeError,ConnectionResetError): pass")
+                .arg("import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect(sys.argv[1]);\ntry:\n s.sendall(b'{\"jsonrpc\":\"2.0\",\"id\":\"foreign\",\"method\":\"hello\"}\\n'); data=s.recv(4096); assert data == b'', data\nexcept (BrokenPipeError,ConnectionResetError): pass")
                 .arg(path.as_str()).uid(1001).gid(1001).output().unwrap();
             assert!(output.status.success(), "{:?}", output);
         }
@@ -520,10 +533,10 @@ async fn ids_use_utf8_byte_limits_and_missing_daemon_wait_is_bounded() {
     let mut server = Server::spawn(&paths);
     server.ready(&paths).await;
     let id = "é".repeat(64);
-    let accepted = format!("{{\"version\":1,\"id\":\"{id}\",\"op\":\"hello\"}}\n");
+    let accepted = format!("{{\"jsonrpc\":\"2.0\",\"id\":\"{id}\",\"method\":\"hello\"}}\n");
     assert_eq!(request(&paths, &accepted).unwrap()["id"], id);
-    let rejected = format!("{{\"version\":1,\"id\":\"{id}x\",\"op\":\"hello\"}}\n");
-    assert!(request(&paths, &rejected).is_none());
+    let rejected = format!("{{\"jsonrpc\":\"2.0\",\"id\":\"{id}x\",\"method\":\"hello\"}}\n");
+    assert_eq!(request(&paths, &rejected).unwrap()["error"]["code"], -32600);
     server.stop(true);
 }
 
@@ -543,4 +556,57 @@ async fn restrictive_inherited_umask_does_not_repair_a_lock() {
     assert!(!output.status.success());
     assert_eq!(fs::metadata(paths.lock()).unwrap().mode() & 0o7777, 0);
     assert!(!paths.agent().exists() && !paths.control().exists());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn readiness_rejects_invalid_helper_metadata_without_removing_the_listener() {
+    for scenario in [
+        "nil",
+        "not_ready",
+        "capability",
+        "agent",
+        "control",
+        "unknown",
+    ] {
+        let (_parent, paths) = fixture();
+        RuntimeDirectory::prepare(paths.clone()).unwrap();
+        let listener = tokio::net::UnixListener::bind(paths.control()).unwrap();
+        let mut result = serde_json::json!({
+            "instance": uuid::Uuid::from_u128(1),
+            "supported_versions": [1],
+            "ready": true,
+            "endpoints": {"agent": paths.agent(), "control": paths.control()}
+        });
+        match scenario {
+            "nil" => result["instance"] = serde_json::json!(uuid::Uuid::nil()),
+            "not_ready" => result["ready"] = serde_json::json!(false),
+            "capability" => result["supported_versions"] = serde_json::json!([2]),
+            "agent" => result["endpoints"]["agent"] = serde_json::json!("/other/agent.sock"),
+            "control" => result["endpoints"]["control"] = serde_json::json!("/other/control.sock"),
+            "unknown" => result["unexpected"] = serde_json::json!(true),
+            _ => unreachable!(),
+        }
+        let fake = tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            use tokio::io::AsyncWriteExt;
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = tokio::io::BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            let response =
+                serde_json::json!({"jsonrpc":"2.0", "id":request["id"], "result":result});
+            let mut bytes = serde_json::to_vec(&response).unwrap();
+            bytes.push(b'\n');
+            reader.get_mut().write_all(&bytes).await.unwrap();
+        });
+        assert!(
+            control::wait_ready(&paths, Instant::now() + Duration::from_secs(1))
+                .await
+                .is_err(),
+            "{scenario}"
+        );
+        fake.await.unwrap();
+        assert!(paths.control().exists());
+    }
 }

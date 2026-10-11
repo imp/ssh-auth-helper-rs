@@ -264,7 +264,7 @@ impl RuntimeSockets {
             match timeout_at(deadline, net::UnixStream::connect(&path)).await {
                 Ok(Ok(_stream)) => return Err(RuntimeError::LiveEndpoint(path)),
                 Ok(Err(error)) if error.kind() == ErrorKind::ConnectionRefused => {
-                    stale.push((name, identity))
+                    stale.push((name, identity));
                 }
                 Ok(Err(error)) if error.kind() == ErrorKind::NotFound => {
                     if stat_entry(directory, name)?.is_some() {

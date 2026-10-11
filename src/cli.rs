@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn xdg_directory_contains_helper_endpoints() {
-        let flags = Flags::default().xdg("/run/user/42".as_bytes());
+        let flags = Flags::default().xdg(b"/run/user/42");
         let paths = flags.runtime_paths().unwrap();
         assert_eq!(paths.directory(), "/run/user/42/ssh-auth-helper");
         assert_eq!(paths.agent(), "/run/user/42/ssh-auth-helper/agent.sock");

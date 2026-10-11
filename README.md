@@ -52,7 +52,7 @@ import socket
 with socket.socket(socket.AF_UNIX) as client:
     client.settimeout(2)
     client.connect("/tmp/my-helper/control.sock")
-    client.sendall(b'{"version":1,"id":"check","op":"hello"}\n')
+    client.sendall(b'{"jsonrpc":"2.0","id":"check","method":"hello"}\n')
     print(client.makefile("r").readline().strip())
 ```
 
@@ -60,24 +60,48 @@ The reply contains the daemon instance UUID, `ready`, and both endpoint paths.
 Readiness means listeners/handlers are initialized, not that a forwarded agent
 is available. Agent clients currently close immediately without a fabricated
 reply. Only `hello` is implemented on the control socket; other operations
-return `unknown_operation`. Frames are limited to 64 KiB excluding LF, IDs to
-1..128 UTF-8 bytes, incomplete requests and writes to two seconds, and active
-control tasks to 32. Startup/readiness checks share a five-second budget.
+return JSON-RPC `Method not found` (-32601). Envelopes require exactly
+`jsonrpc: "2.0"`; responses contain one result or error and echo the request ID.
+IDs may be nonempty strings of 1..128 UTF-8 bytes, unsigned integers or null.
+Negative/fractional IDs are outside this documented profile. An absent ID is
+a notification and receives no response. Method params use strict schemas.
+
+Frames are limited to 64 KiB excluding LF, incomplete requests and writes to
+two seconds, and active control tasks to 32. LF, CRLF and a complete final
+line at EOF are accepted. Invalid JSON receives Parse error (-32700); malformed
+envelopes receive Invalid Request (-32600); invalid method params receive
+Invalid params (-32602). Empty batches or batches above 32 members are
+rejected before execution. Mixed batches omit notification replies, and
+all-notification batches emit no frame. Aggregate replies obey the same
+64 KiB limit; overflow closes the stream after potentially executed operations.
+Batches are not atomic. Clients never automatically replay uncertain operations. Startup/readiness checks share a five-second budget.
 
 Use stable Rust, selected by `rust-toolchain.toml`:
 
 ```sh
-cargo build --locked
-cargo test --locked --all-targets
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
+cargo build --locked --workspace
+cargo test --locked --workspace --all-targets
+cargo fmt --all --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 
-This is one Cargo package with library and binary targets. `main.rs` handles
-the process exit, `cli.rs` handles arguments/output, and `runtime.rs` owns path
-discovery and private-directory preparation. `runtime/startup.rs` owns the lifetime guard and endpoint cleanup, `daemon.rs`
-supervises listeners, and `control.rs` implements bounded version-1 JSON framing
-and hello. Registry, selection, and agent relay modules follow next.
+The Cargo workspace has three packages, all inheriting shared Rust/Clippy lints:
+
+- Root `ssh-auth-helper`: CLI, runtime safety, startup, supervision and helper
+  operation implementations. Existing source and integration-test paths remain here.
+- `crates/ssh-auth-protocol`: pure shared message schemas, including
+  `HelloRequest`/`HelloResponse`. Operation payloads use `XxxRequest`/`XxxResponse`.
+- `crates/jsonrpc-uds`: bounded framing, strict JSON-RPC validation, generic
+  dispatch and a jsonrpsee-core custom-transport client. It receives streams
+  whose endpoints and peers have already been authorized by the application.
+
+`jsonrpsee-types` supplies standard envelopes/errors; only the core `async-client`
+feature is enabled. No HTTP/WebSocket transport or proc macros are required.
+The client removes default payload logging middleware; embedding applications
+that install tracing subscribers must disable jsonrpsee internal trace output,
+which includes received RPC data. The helper installs no tracing subscriber.
+
+Registry, selection, watch and agent relay implementations follow next.
 
 The selected foundation uses Camino paths, parking_lot for short shared-state
 locks, Jiff UTC timestamps, and Tokio for asynchronous I/O and monotonic

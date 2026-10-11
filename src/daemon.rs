@@ -36,7 +36,7 @@ pub async fn serve_until(
     let directory = RuntimeDirectory::prepare(paths)?;
     let lock = RuntimeLock::acquire(directory)?;
     let sockets = RuntimeSockets::bind(lock, deadline).await?;
-    let hello = Arc::new(control::Hello::new(sockets.directory().paths()));
+    let hello = Arc::new(control::hello_response(sockets.directory().paths()));
     let mut tasks = JoinSet::new();
     tokio::pin!(shutdown);
     let result = loop {

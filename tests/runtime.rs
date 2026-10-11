@@ -159,6 +159,10 @@ fn ancestor_alias_policy_follows_only_root_owned_links() {
 fn concurrent_starters_retain_the_same_directory_object() {
     let (_parent, paths) = fixture();
     let barrier = Arc::new(Barrier::new(12));
+    #[allow(
+        clippy::needless_collect,
+        reason = "spawn every barrier participant before joining any thread"
+    )]
     let starters: Vec<_> = (0..12)
         .map(|_| {
             let barrier = Arc::clone(&barrier);
