@@ -1,5 +1,4 @@
-//! Runtime path discovery and private-directory preparation. Binding, lifetime
-//! locking, and endpoint recovery are separate startup responsibilities.
+//! Runtime paths, private directory preparation and daemon lifetime ownership.
 
 use std::collections::VecDeque;
 use std::ffi::OsStr;
@@ -13,6 +12,11 @@ use rustix::io;
 use tokio::net;
 
 use super::*;
+
+mod startup;
+
+pub use startup::RuntimeLock;
+pub use startup::RuntimeSockets;
 
 #[cfg(target_os = "macos")]
 const MAX_SOCKET_PATH_BYTES: usize = 103;
@@ -178,7 +182,10 @@ impl AsFd for RuntimeDirectory {
     }
 }
 
-fn authorize_peer_uid(stream: &net::UnixStream, expected: u32) -> Result<(), RuntimeError> {
+pub(crate) fn authorize_peer_uid(
+    stream: &net::UnixStream,
+    expected: u32,
+) -> Result<(), RuntimeError> {
     let actual = stream
         .peer_cred()
         .map_err(RuntimeError::PeerCredentials)?
@@ -391,6 +398,19 @@ fn validate_directory_syntax(path: &Utf8Path) -> Result<(), RuntimeError> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
+    #[error("daemon lock is busy at {0}")]
+    LockBusy(Utf8PathBuf),
+    #[error("live listener occupies {0}; preserving endpoint")]
+    LiveEndpoint(Utf8PathBuf),
+    #[error("deadline exceeded while {0}")]
+    Deadline(&'static str),
+    #[error("cannot {operation} at {path}: {source}")]
+    Socket {
+        path: Utf8PathBuf,
+        operation: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("XDG_RUNTIME_DIR must be a UTF-8 path")]
     NonUtf8Environment,
     #[error("{0}")]

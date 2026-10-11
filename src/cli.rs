@@ -1,4 +1,4 @@
-//! CLI parsing and output; daemon operations will be added as implemented.
+//! CLI parsing, explicit output and foreground serving.
 
 use std::ffi::OsString;
 use std::io;
@@ -43,11 +43,19 @@ impl Cli {
     /// Execute a supported command.
     ///
     /// # Errors
-    /// Returns an error for invalid runtime path input or failed stdout writes.
+    /// Reports invalid paths, daemon lifecycle failures or failed stdout writes.
     pub fn run(self) -> Result<(), CliError> {
         use io::Write;
 
         match self.command {
+            Command::Serve => {
+                let paths = self.flags.runtime_paths()?;
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(CliError::RuntimeBuild)?
+                    .block_on(crate::daemon::serve(paths))?;
+            }
             Command::SocketPath => {
                 let paths = self.flags.runtime_paths()?;
                 writeln!(io::stdout().lock(), "{}", paths.agent())?;
@@ -59,12 +67,18 @@ impl Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Run in the foreground until SIGINT/SIGTERM (upstream forwarding is pending).
+    Serve,
     /// Print the planned agent socket path without creating files or starting a daemon.
     SocketPath,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
+    #[error(transparent)]
+    Daemon(#[from] crate::daemon::DaemonError),
+    #[error("cannot create async runtime: {0}")]
+    RuntimeBuild(io::Error),
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
     #[error("cannot write command output: {0}")]

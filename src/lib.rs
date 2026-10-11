@@ -1,8 +1,8 @@
 //! Foundation for a per-user forwarded SSH agent proxy.
 //!
-//! The current binary provides socket-path discovery. The library also offers
-//! private-directory preparation and same-user peer authorization. Daemon serving,
-//! registration, health checks, and relaying are not implemented yet.
+//! The binary provides foreground serving and socket-path discovery. The daemon
+//! offers bounded readiness and safe runtime ownership. Upstream registration,
+//! health checks and relaying are not implemented yet.
 
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
@@ -14,4 +14,6 @@ use runtime::RuntimeError;
 use runtime::RuntimePaths;
 
 pub mod cli;
+pub mod control;
+pub mod daemon;
 pub mod runtime;
