@@ -1,4 +1,4 @@
-use std::ffi::OsStr;
+use std::ffi;
 use std::os::unix::ffi::OsStrExt;
 use std::process::Command;
 
@@ -34,7 +34,7 @@ fn explicit_directory_overrides_non_utf8_xdg_option() {
     let runtime = dir.path().join("helper");
     let output = binary()
         .arg("--xdg-runtime-dir")
-        .arg(OsStr::from_bytes(b"/tmp/\xff"))
+        .arg(ffi::OsStr::from_bytes(b"/tmp/\xff"))
         .arg("--runtime-dir")
         .arg(&runtime)
         .arg("socket-path")
@@ -71,7 +71,7 @@ fn socket_path_discovery_has_no_filesystem_side_effects() {
 fn non_utf8_cli_path_is_rejected() {
     let output = binary()
         .arg("--runtime-dir")
-        .arg(OsStr::from_bytes(b"/tmp/\xff"))
+        .arg(ffi::OsStr::from_bytes(b"/tmp/\xff"))
         .arg("socket-path")
         .output()
         .unwrap();

@@ -1,8 +1,5 @@
 //! CLI parsing, explicit output and foreground serving.
 
-use std::ffi::OsString;
-use std::io;
-
 use clap::Args;
 use clap::Parser;
 use clap::Subcommand;
@@ -26,7 +23,7 @@ pub struct Flags {
     pub runtime_dir: Option<Utf8PathBuf>,
     /// XDG base directory; UTF-8 conversion is deferred until it is selected.
     #[arg(long, global = true, env = "XDG_RUNTIME_DIR", hide = true)]
-    pub xdg_runtime_dir: Option<OsString>,
+    pub xdg_runtime_dir: Option<ffi::OsString>,
 }
 
 impl Flags {
@@ -89,14 +86,29 @@ pub enum CliError {
 mod tests {
     use super::*;
 
-    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::ffi::OsStrExt;
+
+    impl Flags {
+        fn runtime(self, runtime: &str) -> Self {
+            let runtime_dir = Utf8PathBuf::from(runtime).into();
+            Self {
+                runtime_dir,
+                ..self
+            }
+        }
+
+        fn xdg(self, xdg: &[u8]) -> Self {
+            let xdg_runtime_dir = ffi::OsStr::from_bytes(xdg).to_os_string().into();
+            Self {
+                xdg_runtime_dir,
+                ..self
+            }
+        }
+    }
 
     #[test]
     fn explicit_directory_overrides_non_utf8_xdg() {
-        let flags = Flags {
-            runtime_dir: Some("/tmp/helper".into()),
-            xdg_runtime_dir: Some(OsString::from_vec(b"/tmp/\xff".to_vec())),
-        };
+        let flags = Flags::default().runtime("/tmp/helper").xdg(b"/tmp/\xff");
         assert_eq!(
             flags.runtime_paths().unwrap().agent(),
             "/tmp/helper/agent.sock"
@@ -105,10 +117,7 @@ mod tests {
 
     #[test]
     fn xdg_directory_contains_helper_endpoints() {
-        let flags = Flags {
-            xdg_runtime_dir: Some("/run/user/42".into()),
-            ..Flags::default()
-        };
+        let flags = Flags::default().xdg("/run/user/42".as_bytes());
         let paths = flags.runtime_paths().unwrap();
         assert_eq!(paths.directory(), "/run/user/42/ssh-auth-helper");
         assert_eq!(paths.agent(), "/run/user/42/ssh-auth-helper/agent.sock");
@@ -128,10 +137,7 @@ mod tests {
 
     #[test]
     fn selected_non_utf8_xdg_is_rejected() {
-        let flags = Flags {
-            xdg_runtime_dir: Some(OsString::from_vec(b"/tmp/\xff".to_vec())),
-            ..Flags::default()
-        };
+        let flags = Flags::default().xdg(b"/tmp/\xff");
         assert!(matches!(
             flags.runtime_paths(),
             Err(RuntimeError::NonUtf8Environment)
@@ -148,10 +154,7 @@ mod tests {
             "/tmp/line\nbreak",
             "/tmp/nul\0byte",
         ] {
-            let flags = Flags {
-                xdg_runtime_dir: Some(base.into()),
-                ..Flags::default()
-            };
+            let flags = Flags::default().xdg(base.as_bytes());
             assert!(
                 matches!(flags.runtime_paths(), Err(RuntimeError::InvalidPath(_))),
                 "{base:?}"

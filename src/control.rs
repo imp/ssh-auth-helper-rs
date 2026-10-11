@@ -1,25 +1,23 @@
 //! Bounded version-1 control framing and readiness. Registry operations come next.
 
-use std::io;
-use std::time::Duration;
-
+use futures_util::SinkExt;
+use futures_util::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::io::AsyncBufRead;
-use tokio::io::AsyncBufReadExt;
+use serde_json as json;
+use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
-use tokio::io::AsyncWriteExt;
-use tokio::io::BufReader;
 use tokio::net::UnixStream;
+use tokio::time::Duration;
 use tokio::time::Instant;
 use tokio::time::sleep_until;
 use tokio::time::timeout_at;
+use tokio_util::codec::Framed;
+use tokio_util::codec::LinesCodec;
+use tokio_util::codec::LinesCodecError;
 use uuid::Uuid;
 
-use crate::Utf8PathBuf;
-use crate::runtime::RuntimeError;
-use crate::runtime::RuntimePaths;
-use crate::runtime::authorize_peer_uid;
+use super::*;
 
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -32,6 +30,35 @@ struct Request {
     version: u32,
     id: String,
     op: String,
+}
+
+impl Request {
+    const V1: u32 = 1;
+
+    fn new(id: impl Into<String>, op: impl Into<String>) -> Self {
+        Self {
+            version: Self::V1,
+            id: id.into(),
+            op: op.into(),
+        }
+    }
+
+    fn from_json(frame: &str) -> json::Result<Self> {
+        json::from_str(frame)
+    }
+
+    fn from_frame(frame: &str) -> Result<Self, ControlError> {
+        let request = Self::from_json(frame)?;
+        if request.id.is_empty() || request.id.len() > MAX_ID_BYTES {
+            Err(ControlError::InvalidRequest)
+        } else {
+            Ok(request)
+        }
+    }
+
+    fn hello(id: Uuid) -> Self {
+        Self::new(id, "hello")
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -109,24 +136,16 @@ pub async fn wait_ready(paths: &RuntimePaths, deadline: Instant) -> Result<Hello
 
 async fn hello_once(paths: &RuntimePaths, deadline: Instant) -> Result<Hello, ControlError> {
     let stream = timeout_at(deadline, UnixStream::connect(paths.control())).await??;
-    authorize_peer_uid(&stream, rustix::process::getuid().as_raw())?;
-    let mut stream = BufReader::new(stream);
-    let id = Uuid::new_v4().to_string();
-    write_frame(
-        stream.get_mut(),
-        &Request {
-            version: 1,
-            id: id.clone(),
-            op: "hello".into(),
-        },
-        deadline,
-    )
-    .await?;
+    runtime::authorize_peer_uid(&stream, rustix::process::getuid().as_raw())?;
+    let mut stream = Framed::new(stream, LinesCodec::new_with_max_length(MAX_FRAME_BYTES));
+    let id = Uuid::new_v4();
+    let hello = Request::hello(id);
+    write_frame(&mut stream, &hello, deadline).await?;
     let frame = read_frame(&mut stream, deadline)
         .await?
         .ok_or(ControlError::InvalidReply)?;
-    let response: Response = serde_json::from_slice(&frame)?;
-    if response.version != 1 || response.id != id || response.error.is_some() {
+    let response: Response = json::from_str(&frame)?;
+    if response.version != 1 || response.id != id.to_string() || response.error.is_some() {
         return Err(ControlError::InvalidReply);
     }
     let hello = response.result.ok_or(ControlError::InvalidReply)?;
@@ -142,16 +161,13 @@ async fn hello_once(paths: &RuntimePaths, deadline: Instant) -> Result<Hello, Co
 }
 
 pub(crate) async fn handle(stream: UnixStream, hello: &Hello) -> Result<(), ControlError> {
-    let mut stream = BufReader::new(stream);
+    let mut stream = Framed::new(stream, LinesCodec::new_with_max_length(MAX_FRAME_BYTES));
     loop {
         let Some(frame) = read_frame(&mut stream, Instant::now() + REQUEST_TIMEOUT).await? else {
             return Ok(());
         };
-        let request: Request = serde_json::from_slice(&frame)?;
-        if request.id.is_empty() || request.id.len() > MAX_ID_BYTES {
-            return Err(ControlError::InvalidRequest);
-        }
-        let error = if request.version != 1 {
+        let request = Request::from_frame(&frame)?;
+        let error = if request.version != Request::V1 {
             Some(ProtocolError {
                 code: "unsupported_version".into(),
                 message: "supported protocol version is 1".into(),
@@ -174,59 +190,30 @@ pub(crate) async fn handle(stream: UnixStream, hello: &Hello) -> Result<(), Cont
             },
             error,
         };
-        write_frame(
-            stream.get_mut(),
-            &response,
-            Instant::now() + REQUEST_TIMEOUT,
-        )
-        .await?;
+        write_frame(&mut stream, &response, Instant::now() + REQUEST_TIMEOUT).await?;
     }
 }
 
-// The limit excludes the terminating LF and includes any CR. BufReader itself has
-// fixed capacity; do not use an unbounded read_line/read_until before checking size.
-async fn read_frame<R: AsyncBufRead + Unpin>(
-    reader: &mut R,
+// LinesCodec limits bytes before LF (including CR), strips trailing CR, and emits
+// a final unterminated line at EOF. JSON validation still rejects truncated input.
+async fn read_frame<R: AsyncRead + Unpin>(
+    reader: &mut Framed<R, LinesCodec>,
     deadline: Instant,
-) -> Result<Option<Vec<u8>>, ControlError> {
-    timeout_at(deadline, async {
-        let mut frame = Vec::new();
-        loop {
-            let available = reader.fill_buf().await?;
-            if available.is_empty() {
-                return if frame.is_empty() {
-                    Ok(None)
-                } else {
-                    Err(ControlError::Incomplete)
-                };
-            }
-            let newline = available.iter().position(|byte| *byte == b'\n');
-            let count = newline.unwrap_or(available.len());
-            if count > MAX_FRAME_BYTES - frame.len() {
-                return Err(ControlError::TooLarge);
-            }
-            frame.extend_from_slice(&available[..count]);
-            reader.consume(count + usize::from(newline.is_some()));
-            if newline.is_some() {
-                return Ok(Some(frame));
-            }
-        }
-    })
-    .await?
+) -> Result<Option<String>, ControlError> {
+    Ok(timeout_at(deadline, reader.next()).await?.transpose()?)
 }
 
 async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
-    writer: &mut W,
+    writer: &mut Framed<W, LinesCodec>,
     value: &T,
     deadline: Instant,
 ) -> Result<(), ControlError> {
     // Callers serialize fixed-schema values with individually bounded strings.
-    let mut frame = serde_json::to_vec(value)?;
+    let frame = json::to_string(value)?;
     if frame.len() > MAX_FRAME_BYTES {
         return Err(ControlError::TooLarge);
     }
-    frame.push(b'\n');
-    timeout_at(deadline, writer.write_all(&frame)).await??;
+    timeout_at(deadline, writer.send(frame)).await??;
     Ok(())
 }
 
@@ -235,15 +222,13 @@ pub enum ControlError {
     #[error("control I/O failed: {0}")]
     Io(#[from] io::Error),
     #[error("invalid control JSON: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(#[from] json::Error),
     #[error(transparent)]
     Peer(#[from] RuntimeError),
     #[error("control deadline exceeded")]
     Timeout,
     #[error("control frame exceeds 64 KiB")]
     TooLarge,
-    #[error("incomplete control frame")]
-    Incomplete,
     #[error("request id must contain 1..128 UTF-8 bytes")]
     InvalidRequest,
     #[error("invalid or incompatible daemon readiness reply")]
@@ -256,22 +241,39 @@ impl From<tokio::time::error::Elapsed> for ControlError {
     }
 }
 
+impl From<LinesCodecError> for ControlError {
+    fn from(error: LinesCodecError) -> Self {
+        match error {
+            LinesCodecError::MaxLineLengthExceeded => Self::TooLarge,
+            LinesCodecError::Io(error) => Self::Io(error),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
     use tokio::io::duplex;
 
     #[tokio::test(flavor = "current_thread")]
     async fn framing_accepts_exact_limit_and_rejects_an_extra_byte() {
-        for (size, accepted) in [(MAX_FRAME_BYTES, true), (MAX_FRAME_BYTES + 1, false)] {
+        for (size, ending, accepted) in [
+            (MAX_FRAME_BYTES, b"\n".as_slice(), true),
+            (MAX_FRAME_BYTES + 1, b"\n".as_slice(), false),
+            (MAX_FRAME_BYTES - 1, b"\r\n".as_slice(), true),
+            (MAX_FRAME_BYTES, b"\r\n".as_slice(), false),
+            (MAX_FRAME_BYTES, b"".as_slice(), true),
+            (MAX_FRAME_BYTES + 1, b"".as_slice(), false),
+        ] {
             let (mut writer, reader) = duplex(1024);
             let task = tokio::spawn(async move {
                 let mut data = vec![b'x'; size];
-                data.push(b'\n');
+                data.extend_from_slice(ending);
                 let _ = writer.write_all(&data).await;
             });
             let result = read_frame(
-                &mut BufReader::new(reader),
+                &mut Framed::new(reader, LinesCodec::new_with_max_length(MAX_FRAME_BYTES)),
                 Instant::now() + REQUEST_TIMEOUT,
             )
             .await;
@@ -286,22 +288,62 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn partial_eof_and_incomplete_deadline_are_rejected() {
+    async fn final_line_at_eof_is_validated_as_json() {
         let (mut writer, reader) = duplex(64);
-        writer.write_all(b"partial").await.unwrap();
+        writer
+            .write_all(br#"{"version":1,"id":"a","op":"hello"}"#)
+            .await
+            .unwrap();
         drop(writer);
+        let mut reader = Framed::new(reader, LinesCodec::new_with_max_length(MAX_FRAME_BYTES));
+        let frame = read_frame(&mut reader, Instant::now() + REQUEST_TIMEOUT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Request>(&frame).unwrap().id, "a");
+        assert!(
+            read_frame(&mut reader, Instant::now() + REQUEST_TIMEOUT)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unterminated_request_on_an_open_connection_times_out() {
+        let (mut writer, reader) = duplex(64);
+        writer
+            .write_all(br#"{"version":1,"id":"a","op":"hello"}"#)
+            .await
+            .unwrap();
+        let mut reader = Framed::new(reader, LinesCodec::new_with_max_length(MAX_FRAME_BYTES));
         assert!(matches!(
-            read_frame(
-                &mut BufReader::new(reader),
-                Instant::now() + REQUEST_TIMEOUT
-            )
-            .await,
-            Err(ControlError::Incomplete)
+            read_frame(&mut reader, Instant::now() + Duration::from_millis(10)).await,
+            Err(ControlError::Timeout)
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_idle_connection_has_a_bounded_read_deadline() {
         let (_writer, reader) = duplex(64);
         assert!(matches!(
-            read_frame(&mut BufReader::new(reader), Instant::now()).await,
+            read_frame(
+                &mut Framed::new(reader, LinesCodec::new_with_max_length(MAX_FRAME_BYTES)),
+                Instant::now()
+            )
+            .await,
             Err(ControlError::Timeout)
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invalid_utf8_closes_framing() {
+        let (mut writer, reader) = duplex(64);
+        writer.write_all(b"\xff\n").await.unwrap();
+        let mut reader = Framed::new(reader, LinesCodec::new_with_max_length(MAX_FRAME_BYTES));
+        assert!(matches!(
+            read_frame(&mut reader, Instant::now() + REQUEST_TIMEOUT).await,
+            Err(ControlError::Io(error)) if error.kind() == io::ErrorKind::InvalidData
         ));
     }
 
@@ -319,12 +361,46 @@ mod tests {
 #[cfg(test)]
 mod write_tests {
     use super::*;
+    use tokio::io::AsyncReadExt;
     use tokio::io::duplex;
 
     #[tokio::test(flavor = "current_thread")]
     async fn unread_response_has_a_bounded_write_deadline() {
-        let (mut writer, _reader) = duplex(1);
+        let (writer, _reader) = duplex(1);
+        let mut writer = Framed::new(writer, LinesCodec::new_with_max_length(MAX_FRAME_BYTES));
         let result = write_frame(&mut writer, &"reply", Instant::now()).await;
         assert!(matches!(result, Err(ControlError::Timeout)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn outgoing_json_has_a_limit_even_though_the_codec_encoder_does_not() {
+        let (writer, mut reader) = duplex(MAX_FRAME_BYTES + 1);
+        let mut writer = Framed::new(writer, LinesCodec::new_with_max_length(MAX_FRAME_BYTES));
+        let accepted = "x".repeat(MAX_FRAME_BYTES - 2);
+        write_frame(&mut writer, &accepted, Instant::now() + REQUEST_TIMEOUT)
+            .await
+            .unwrap();
+        let mut bytes = vec![0; MAX_FRAME_BYTES + 1];
+        reader.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(bytes.last(), Some(&b'\n'));
+        assert_eq!(serde_json::from_slice::<String>(&bytes).unwrap(), accepted);
+        assert!(matches!(
+            write_frame(
+                &mut writer,
+                &"x".repeat(MAX_FRAME_BYTES - 1),
+                Instant::now() + REQUEST_TIMEOUT
+            )
+            .await,
+            Err(ControlError::TooLarge)
+        ));
+        assert_eq!(writer.write_buffer().len(), 0);
+        assert!(
+            timeout_at(
+                Instant::now() + Duration::from_millis(10),
+                reader.read(&mut [0])
+            )
+            .await
+            .is_err()
+        );
     }
 }

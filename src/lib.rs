@@ -4,14 +4,20 @@
 //! offers bounded readiness and safe runtime ownership. Upstream registration,
 //! health checks and relaying are not implemented yet.
 
+use std::ffi;
+use std::io;
+
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("ssh-auth-helper currently targets Linux and macOS");
 
+use runtime::RuntimeDirectory;
 use runtime::RuntimeError;
+use runtime::RuntimeLock;
 use runtime::RuntimePaths;
+use runtime::RuntimeSockets;
 
 pub mod cli;
 pub mod control;

@@ -352,6 +352,7 @@ async fn control_errors_and_stalled_peers_do_not_block_readiness() {
         "{\"version\":1,\"id\":\"a\",\"op\":\"hello\",\"x\":0}\n",
         "{\"version\":1,\"id\":\"a\",\"id\":\"b\",\"op\":\"hello\"}\n",
         "partial",
+        "{\"version\":1",
     ] {
         assert!(request(&paths, input).is_none());
     }
@@ -396,6 +397,65 @@ async fn fragmented_and_sequential_hello_requests_work_on_one_connection() {
         assert_eq!(reply["result"]["ready"], true);
     }
     server.stop(true);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn crlf_and_final_eof_requests_work_and_preserve_escaped_cr() {
+    let (_parent, paths) = fixture();
+    let mut server = Server::spawn(&paths);
+    server.ready(&paths).await;
+    let mut stream = UnixStream::connect(paths.control()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream
+        .write_all(b"{\"version\":1,\"id\":\"one\\r\",\"op\":\"hello\"}\r\n{\"version\":1,\"id\":\"two\",\"op\":\"hello\"}")
+        .unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut reader = BufReader::new(stream);
+    for id in ["one\r", "two"] {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.ends_with('\n'));
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(reply["id"], id);
+        assert_eq!(reply["result"]["ready"], true);
+    }
+    assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+    server.stop(true);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn readiness_accepts_crlf_and_a_final_reply_at_eof() {
+    for ending in [b"\r\n".as_slice(), b"".as_slice()] {
+        let (_parent, paths) = fixture();
+        RuntimeDirectory::prepare(paths.clone()).unwrap();
+        let listener = tokio::net::UnixListener::bind(paths.control()).unwrap();
+        let endpoints = serde_json::json!({"agent": paths.agent(), "control": paths.control()});
+        let instance = uuid::Uuid::new_v4();
+        let fake = tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            use tokio::io::AsyncWriteExt;
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = tokio::io::BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            let reply = serde_json::json!({
+                "version": 1,
+                "id": request["id"],
+                "result": {"instance": instance, "supported_versions": [1], "ready": true, "endpoints": endpoints}
+            });
+            let mut bytes = serde_json::to_vec(&reply).unwrap();
+            bytes.extend_from_slice(ending);
+            reader.get_mut().write_all(&bytes).await.unwrap();
+        });
+        let hello = control::wait_ready(&paths, Instant::now() + Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(hello.instance, instance);
+        fake.await.unwrap();
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

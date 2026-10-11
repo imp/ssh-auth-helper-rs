@@ -1,5 +1,4 @@
 //! Lifetime ownership, conservative recovery and identity-scoped socket cleanup.
-
 use std::io::ErrorKind;
 
 use tokio::time::Instant;

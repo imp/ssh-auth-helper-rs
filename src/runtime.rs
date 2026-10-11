@@ -1,7 +1,6 @@
 //! Runtime paths, private directory preparation and daemon lifetime ownership.
 
 use std::collections::VecDeque;
-use std::ffi::OsStr;
 use std::os::fd::AsFd;
 use std::os::fd::BorrowedFd;
 use std::os::fd::OwnedFd;
@@ -13,10 +12,10 @@ use tokio::net;
 
 use super::*;
 
-mod startup;
-
 pub use startup::RuntimeLock;
 pub use startup::RuntimeSockets;
+
+mod startup;
 
 #[cfg(target_os = "macos")]
 const MAX_SOCKET_PATH_BYTES: usize = 103;
@@ -40,7 +39,7 @@ impl RuntimePaths {
     /// Rejects non-UTF-8, relative, malformed, or overly long paths.
     pub fn discover(
         explicit: Option<&Utf8Path>,
-        xdg: Option<&OsStr>,
+        xdg: Option<&ffi::OsStr>,
     ) -> Result<Self, RuntimeError> {
         let directory = if let Some(directory) = explicit {
             directory.to_owned()
