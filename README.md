@@ -70,7 +70,10 @@ Frames are limited to 64 KiB excluding LF, incomplete requests and writes to
 two seconds, and active control tasks to 32. LF, CRLF and a complete final
 line at EOF are accepted. Invalid JSON receives Parse error (-32700); malformed
 envelopes receive Invalid Request (-32600); invalid method params receive
-Invalid params (-32602). Empty batches or batches above 32 members are
+Invalid params (-32602). Duplicate envelope fields are rejected. Method payloads
+use ordinary JSON values; duplicate keys inside params/results keep the last
+value. Output is serialized into a fixed-capacity buffer before it is queued,
+and string newlines are escaped. Empty batches or batches above 32 members are
 rejected before execution. Mixed batches omit notification replies, and
 all-notification batches emit no frame. Aggregate replies obey the same
 64 KiB limit; overflow closes the stream after potentially executed operations.
@@ -91,15 +94,16 @@ The Cargo workspace has three packages, all inheriting shared Rust/Clippy lints:
   operation implementations. Existing source and integration-test paths remain here.
 - `crates/ssh-auth-protocol`: pure shared message schemas, including
   `HelloRequest`/`HelloResponse`. Operation payloads use `XxxRequest`/`XxxResponse`.
-- `crates/jsonrpc-uds`: bounded framing, strict JSON-RPC validation, generic
-  dispatch and a jsonrpsee-core custom-transport client. It receives streams
-  whose endpoints and peers have already been authorized by the application.
+- `crates/jsonrpc-uds`: bounded JSON-RPC parsing and serialization with typed
+  frames through `Framed<_, JsonRpcCodec>`. Requests, notifications, responses
+  and batches are typed; params/results use `serde_json::Value`. The helper
+  owns dispatch, deadlines and readiness calls over the typed stream. Callers
+  authorize endpoints and peers before constructing the framed stream.
 
-`jsonrpsee-types` supplies standard envelopes/errors; only the core `async-client`
-feature is enabled. No HTTP/WebSocket transport or proc macros are required.
-The client removes default payload logging middleware; embedding applications
-that install tracing subscribers must disable jsonrpsee internal trace output,
-which includes received RPC data. The helper installs no tracing subscriber.
+The wire types are small owned Serde types, with no RPC framework or raw JSON
+payloads. Readiness sends one identified request and checks its response under
+one absolute connect/send/receive budget. Every return closes that connection;
+there are no background client tasks or automatic request replays.
 
 Registry, selection, watch and agent relay implementations follow next.
 

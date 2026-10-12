@@ -1,0 +1,20 @@
+[package]
+name = "jsonrpc-uds"
+
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "time"] }
+
+[lints]
+workspace = true

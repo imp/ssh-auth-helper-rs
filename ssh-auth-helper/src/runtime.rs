@@ -8,7 +8,6 @@ use std::os::fd::OwnedFd;
 use camino::Utf8Component;
 use rustix::fs;
 use rustix::io;
-use tokio::net;
 
 use super::*;
 

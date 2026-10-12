@@ -1,14 +1,14 @@
 [workspace]
-members = ["crates/jsonrpc-uds", "crates/ssh-auth-protocol"]
-default-members = [".", "crates/jsonrpc-uds", "crates/ssh-auth-protocol"]
 resolver = "3"
+members = ["jsonrpc-uds", "ssh-auth-helper", "ssh-auth-protocol"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-camino = { version = "1", features = ["serde1"] }
+bytes = "1.12"
+camino = { version = "1.2", features = ["serde1"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 jiff = { version = "0.2", default-features = false, features = ["serde", "std"] }
@@ -19,30 +19,11 @@ serde_json = "1.0"
 thiserror = "2.0"
 tokio = "1.53"
 tokio-util = { version = "0.7", features = ["codec"] }
-uuid = { version = "1.27", features = ["serde"] }
+uuid = { version = "1.28", features = ["serde"] }
 
-jsonrpsee-types = "0.26.1"
-jsonrpsee-core = { version = "0.26.1", default-features = false, features = ["async-client"] }
+jsonrpc-uds = { path = "./jsonrpc-uds" }
+ssh-auth-protocol = { path = "./ssh-auth-protocol" }
 tempfile = "3"
-jsonrpc-uds = { path = "crates/jsonrpc-uds" }
-ssh-auth-protocol = { path = "crates/ssh-auth-protocol" }
-
-# Members opt in with [lints] workspace = true. Keep safety errors unconditional.
-[workspace.lints.rust]
-unsafe_code = "forbid"
-unsafe_op_in_unsafe_fn = "deny"
-non_ascii_idents = "forbid"
-unused_must_use = "deny"
-rust_2018_idioms = { level = "warn", priority = -1 }
-future_incompatible = { level = "warn", priority = -1 }
-nonstandard_style = { level = "warn", priority = -1 }
-missing_debug_implementations = "warn"
-redundant_imports = "warn"
-trivial_casts = "warn"
-trivial_numeric_casts = "warn"
-unused_import_braces = "warn"
-unused_lifetimes = "warn"
-unused_macro_rules = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
@@ -75,31 +56,24 @@ semicolon_if_nothing_returned = "warn"
 str_to_string = "warn"
 string_lit_as_bytes = "warn"
 todo = "warn"
-unimplemented = "warn"
 undocumented_unsafe_blocks = "deny"
+unimplemented = "warn"
 unused_async = "warn"
 unused_self = "warn"
 
-[package]
-name = "ssh-auth-helper"
-version.workspace = true
-edition.workspace = true
-
-[lints]
-workspace = true
-
-[dependencies]
-camino.workspace = true
-clap.workspace = true
-jiff.workspace = true
-parking_lot.workspace = true
-rustix.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
-uuid = { workspace = true, features = ["v4"] }
-jsonrpc-uds.workspace = true
-ssh-auth-protocol.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
+# Members opt in with [lints] workspace = true. Keep safety errors unconditional.
+[workspace.lints.rust]
+future_incompatible = { level = "warn", priority = -1 }
+missing_debug_implementations = "warn"
+non_ascii_idents = "forbid"
+nonstandard_style = { level = "warn", priority = -1 }
+redundant_imports = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+unused_must_use = "deny"

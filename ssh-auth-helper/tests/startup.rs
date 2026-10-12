@@ -15,13 +15,14 @@ use std::time::Duration;
 
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
-use serde_json::Value;
+use serde_json as json;
 use ssh_auth_helper::control;
 use ssh_auth_helper::runtime::RuntimeDirectory;
 use ssh_auth_helper::runtime::RuntimeError;
 use ssh_auth_helper::runtime::RuntimeLock;
 use ssh_auth_helper::runtime::RuntimePaths;
 use ssh_auth_helper::runtime::RuntimeSockets;
+use tokio::net;
 use tokio::time::Instant;
 
 fn fixture() -> (tempfile::TempDir, RuntimePaths) {
@@ -314,7 +315,7 @@ async fn expired_startup_budget_does_not_bind() {
     assert!(!paths.agent().exists() && !paths.control().exists());
 }
 
-fn request(paths: &RuntimePaths, value: &str) -> Option<Value> {
+fn request(paths: &RuntimePaths, value: &str) -> Option<json::Value> {
     let mut stream = UnixStream::connect(paths.control()).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
@@ -325,7 +326,7 @@ fn request(paths: &RuntimePaths, value: &str) -> Option<Value> {
     if BufReader::new(stream).read_line(&mut line).unwrap_or(0) == 0 {
         None
     } else {
-        Some(serde_json::from_str(&line).unwrap())
+        Some(json_value(&line).unwrap())
     }
 }
 
@@ -405,7 +406,7 @@ async fn fragmented_and_sequential_hello_requests_work_on_one_connection() {
         }
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
-        let reply: Value = serde_json::from_str(&line).unwrap();
+        let reply = json_value(&line).unwrap();
         assert_eq!(reply["id"], id);
         assert_eq!(reply["result"]["ready"], true);
     }
@@ -430,7 +431,7 @@ async fn crlf_and_final_eof_requests_work_and_preserve_escaped_cr() {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         assert!(line.ends_with('\n'));
-        let reply: Value = serde_json::from_str(&line).unwrap();
+        let reply = json_value(&line).unwrap();
         assert_eq!(reply["id"], id);
         assert_eq!(reply["result"]["ready"], true);
     }
@@ -443,8 +444,8 @@ async fn readiness_accepts_crlf_and_a_final_reply_at_eof() {
     for ending in [b"\r\n".as_slice(), b"".as_slice()] {
         let (_parent, paths) = fixture();
         RuntimeDirectory::prepare(paths.clone()).unwrap();
-        let listener = tokio::net::UnixListener::bind(paths.control()).unwrap();
-        let endpoints = serde_json::json!({"agent": paths.agent(), "control": paths.control()});
+        let listener = net::UnixListener::bind(paths.control()).unwrap();
+        let endpoints = json::json!({"agent": paths.agent(), "control": paths.control()});
         let instance = uuid::Uuid::new_v4();
         let fake = tokio::spawn(async move {
             use tokio::io::AsyncBufReadExt;
@@ -453,13 +454,13 @@ async fn readiness_accepts_crlf_and_a_final_reply_at_eof() {
             let mut reader = tokio::io::BufReader::new(stream);
             let mut line = String::new();
             reader.read_line(&mut line).await.unwrap();
-            let request: Value = serde_json::from_str(&line).unwrap();
-            let reply = serde_json::json!({
+            let request = json_value(&line).unwrap();
+            let reply = json::json!({
                 "jsonrpc": "2.0",
                 "id": request["id"],
                 "result": {"instance": instance, "supported_versions": [1], "ready": true, "endpoints": endpoints}
             });
-            let mut bytes = serde_json::to_vec(&reply).unwrap();
+            let mut bytes = json::to_vec(&reply).unwrap();
             bytes.extend_from_slice(ending);
             reader.get_mut().write_all(&bytes).await.unwrap();
         });
@@ -475,7 +476,7 @@ async fn readiness_accepts_crlf_and_a_final_reply_at_eof() {
 async fn readiness_rejects_an_incompatible_live_server_without_waiting_for_takeover() {
     let (_parent, paths) = fixture();
     RuntimeDirectory::prepare(paths.clone()).unwrap();
-    let listener = tokio::net::UnixListener::bind(paths.control()).unwrap();
+    let listener = net::UnixListener::bind(paths.control()).unwrap();
     let fake = tokio::spawn(async move {
         use tokio::io::AsyncWriteExt;
         let (mut stream, _) = listener.accept().await.unwrap();
@@ -570,20 +571,20 @@ async fn readiness_rejects_invalid_helper_metadata_without_removing_the_listener
     ] {
         let (_parent, paths) = fixture();
         RuntimeDirectory::prepare(paths.clone()).unwrap();
-        let listener = tokio::net::UnixListener::bind(paths.control()).unwrap();
-        let mut result = serde_json::json!({
+        let listener = net::UnixListener::bind(paths.control()).unwrap();
+        let mut result = json::json!({
             "instance": uuid::Uuid::from_u128(1),
             "supported_versions": [1],
             "ready": true,
             "endpoints": {"agent": paths.agent(), "control": paths.control()}
         });
         match scenario {
-            "nil" => result["instance"] = serde_json::json!(uuid::Uuid::nil()),
-            "not_ready" => result["ready"] = serde_json::json!(false),
-            "capability" => result["supported_versions"] = serde_json::json!([2]),
-            "agent" => result["endpoints"]["agent"] = serde_json::json!("/other/agent.sock"),
-            "control" => result["endpoints"]["control"] = serde_json::json!("/other/control.sock"),
-            "unknown" => result["unexpected"] = serde_json::json!(true),
+            "nil" => result["instance"] = json::json!(uuid::Uuid::nil()),
+            "not_ready" => result["ready"] = json::json!(false),
+            "capability" => result["supported_versions"] = json::json!([2]),
+            "agent" => result["endpoints"]["agent"] = json::json!("/other/agent.sock"),
+            "control" => result["endpoints"]["control"] = json::json!("/other/control.sock"),
+            "unknown" => result["unexpected"] = json::json!(true),
             _ => unreachable!(),
         }
         let fake = tokio::spawn(async move {
@@ -593,10 +594,9 @@ async fn readiness_rejects_invalid_helper_metadata_without_removing_the_listener
             let mut reader = tokio::io::BufReader::new(stream);
             let mut line = String::new();
             reader.read_line(&mut line).await.unwrap();
-            let request: Value = serde_json::from_str(&line).unwrap();
-            let response =
-                serde_json::json!({"jsonrpc":"2.0", "id":request["id"], "result":result});
-            let mut bytes = serde_json::to_vec(&response).unwrap();
+            let request = json_value(&line).unwrap();
+            let response = json::json!({"jsonrpc":"2.0", "id":request["id"], "result":result});
+            let mut bytes = json::to_vec(&response).unwrap();
             bytes.push(b'\n');
             reader.get_mut().write_all(&bytes).await.unwrap();
         });
@@ -609,4 +609,8 @@ async fn readiness_rejects_invalid_helper_metadata_without_removing_the_listener
         fake.await.unwrap();
         assert!(paths.control().exists());
     }
+}
+
+fn json_value(text: &str) -> json::Result<json::Value> {
+    json::from_str(text)
 }
