@@ -544,27 +544,41 @@ version = "0.1.0"
 dependencies = [
  "camino",
  "clap",
+ "rustix",
+ "serde_json",
+ "ssh-auth-helper-lib",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "ssh-auth-helper-api"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "ssh-auth-helper-lib"
+version = "0.1.0"
+dependencies = [
+ "camino",
  "futures-util",
  "jiff",
  "jsonrpc-uds",
  "parking_lot",
  "rustix",
  "serde_json",
- "ssh-auth-protocol",
+ "ssh-auth-helper-api",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
- "uuid",
-]
-
-[[package]]
-name = "ssh-auth-protocol"
-version = "0.1.0"
-dependencies = [
- "camino",
- "serde",
- "serde_json",
  "uuid",
 ]
 

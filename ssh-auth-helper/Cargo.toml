@@ -1,25 +1,22 @@
 [package]
 name = "ssh-auth-helper"
+description = "Command-line entry point for the forwarded SSH agent helper"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 camino.workspace = true
 clap.workspace = true
-futures-util.workspace = true
-jiff.workspace = true
-jsonrpc-uds.workspace = true
-parking_lot.workspace = true
-rustix.workspace = true
-serde_json.workspace = true
-ssh-auth-protocol.workspace = true
+ssh-auth-helper-lib.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
-tokio-util.workspace = true
-uuid = { workspace = true, features = ["v4"] }
+tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
+rustix.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "time"] }
 
 [lints]
 workspace = true

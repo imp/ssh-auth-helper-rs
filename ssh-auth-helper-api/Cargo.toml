@@ -1,5 +1,6 @@
 [package]
-name = "ssh-auth-protocol"
+name = "ssh-auth-helper-api"
+description = "Shared management API schemas for ssh-auth-helper"
 version.workspace = true
 edition.workspace = true
 publish = false

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["jsonrpc-uds", "ssh-auth-helper", "ssh-auth-protocol"]
+members = ["jsonrpc-uds", "ssh-auth-helper", "ssh-auth-helper-api", "ssh-auth-helper-lib"]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,7 +22,8 @@ tokio-util = { version = "0.7", features = ["codec"] }
 uuid = { version = "1.28", features = ["serde"] }
 
 jsonrpc-uds = { path = "./jsonrpc-uds" }
-ssh-auth-protocol = { path = "./ssh-auth-protocol" }
+ssh-auth-helper-lib = { path = "./ssh-auth-helper-lib" }
+ssh-auth-helper-api = { path = "./ssh-auth-helper-api" }
 tempfile = "3"
 
 [workspace.lints.clippy]

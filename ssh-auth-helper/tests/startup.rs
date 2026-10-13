@@ -16,12 +16,12 @@ use std::time::Duration;
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use serde_json as json;
-use ssh_auth_helper::control;
-use ssh_auth_helper::runtime::RuntimeDirectory;
-use ssh_auth_helper::runtime::RuntimeError;
-use ssh_auth_helper::runtime::RuntimeLock;
-use ssh_auth_helper::runtime::RuntimePaths;
-use ssh_auth_helper::runtime::RuntimeSockets;
+use ssh_auth_helper_lib::control;
+use ssh_auth_helper_lib::runtime::RuntimeDirectory;
+use ssh_auth_helper_lib::runtime::RuntimeError;
+use ssh_auth_helper_lib::runtime::RuntimeLock;
+use ssh_auth_helper_lib::runtime::RuntimePaths;
+use ssh_auth_helper_lib::runtime::RuntimeSockets;
 use tokio::net;
 use tokio::time::Instant;
 

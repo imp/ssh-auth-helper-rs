@@ -9,8 +9,8 @@ identity-checked cleanup. Upstream registration and SSH agent forwarding are
 not implemented yet.
 
 ```sh
-cargo run --locked -- socket-path
-cargo run --locked -- --runtime-dir /tmp/my-helper socket-path
+cargo run -p ssh-auth-helper --locked -- socket-path
+cargo run -p ssh-auth-helper --locked -- --runtime-dir /tmp/my-helper socket-path
 ```
 
 An explicit runtime directory takes precedence over `XDG_RUNTIME_DIR`.
@@ -34,7 +34,7 @@ protects an existing listener, even if silent or incompatible.
 Run the daemon in the foreground using an isolated path whose parent exists:
 
 ```sh
-cargo run --locked -- --runtime-dir /tmp/my-helper serve
+cargo run -p ssh-auth-helper --locked -- --runtime-dir /tmp/my-helper serve
 ```
 
 SIGINT or SIGTERM stops acceptance, joins connection tasks, and removes only
@@ -88,15 +88,18 @@ cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 
-The Cargo workspace has three packages, all inheriting shared Rust/Clippy lints:
+The Cargo workspace has four peer packages, all inheriting shared Rust/Clippy lints:
 
-- Root `ssh-auth-helper`: CLI, runtime safety, startup, supervision and helper
-  operation implementations. Existing source and integration-test paths remain here.
-- `crates/ssh-auth-protocol`: pure shared message schemas, including
+- `ssh-auth-helper`: thin executable package with CLI parsing, command dispatch,
+  runtime initialization and process output. It builds the `ssh-auth-helper` binary.
+  CLI and process-startup integration tests live here.
+- `ssh-auth-helper-lib`: core library for runtime safety, startup, supervision and
+  helper operations. It has no executable target or Clap dependency.
+- `ssh-auth-helper-api`: our helper's management API schemas, including
   `HelloRequest`/`HelloResponse`. Operation payloads use `XxxRequest`/`XxxResponse`.
-- `crates/jsonrpc-uds`: bounded JSON-RPC parsing and serialization with typed
+- `jsonrpc-uds`: bounded JSON-RPC parsing and serialization with typed
   frames through `Framed<_, JsonRpcCodec>`. Requests, notifications, responses
-  and batches are typed; params/results use `serde_json::Value`. The helper
+  and batches are typed; params/results use `serde_json::Value`. The core library
   owns dispatch, deadlines and readiness calls over the typed stream. Callers
   authorize endpoints and peers before constructing the framed stream.
 

@@ -1,4 +1,4 @@
-//! Shared data contract for the forwarded-agent helper. No runtime discovery or I/O.
+//! Shared management API contract for ssh-auth-helper. No runtime discovery or I/O.
 
 use camino::Utf8PathBuf;
 use serde::Deserialize;

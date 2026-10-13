@@ -8,9 +8,9 @@ use std::sync::Barrier;
 use std::thread;
 
 use camino::Utf8PathBuf;
-use ssh_auth_helper::runtime::RuntimeDirectory;
-use ssh_auth_helper::runtime::RuntimeError;
-use ssh_auth_helper::runtime::RuntimePaths;
+use ssh_auth_helper_lib::runtime::RuntimeDirectory;
+use ssh_auth_helper_lib::runtime::RuntimeError;
+use ssh_auth_helper_lib::runtime::RuntimePaths;
 
 fn fixture() -> (tempfile::TempDir, RuntimePaths) {
     let parent = tempfile::tempdir_in("/tmp").unwrap();

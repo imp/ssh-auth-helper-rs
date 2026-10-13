@@ -18,13 +18,13 @@ use jsonrpc_uds::RpcId;
 use jsonrpc_uds::RpcMessage;
 use jsonrpc_uds::RpcResponse;
 use jsonrpc_uds::TransportError;
-use ssh_auth_protocol::HELLO_METHOD;
-use ssh_auth_protocol::HelloRequest;
-use ssh_auth_protocol::PROTOCOL_VERSION;
+use ssh_auth_helper_api::HELLO_METHOD;
+use ssh_auth_helper_api::HelloRequest;
+use ssh_auth_helper_api::PROTOCOL_VERSION;
 
 pub use jsonrpc_uds::MAX_FRAME_BYTES;
-pub use ssh_auth_protocol::Endpoints;
-pub use ssh_auth_protocol::HelloResponse;
+pub use ssh_auth_helper_api::Endpoints;
+pub use ssh_auth_helper_api::HelloResponse;
 
 use super::*;
 

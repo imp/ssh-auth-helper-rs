@@ -51,7 +51,7 @@ impl Cli {
                     .enable_all()
                     .build()
                     .map_err(CliError::RuntimeBuild)?
-                    .block_on(crate::daemon::serve(paths))?;
+                    .block_on(daemon::serve(paths))?;
             }
             Command::SocketPath => {
                 let paths = self.flags.runtime_paths()?;
@@ -73,7 +73,7 @@ pub enum Command {
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
     #[error(transparent)]
-    Daemon(#[from] crate::daemon::DaemonError),
+    Daemon(#[from] daemon::DaemonError),
     #[error("cannot create async runtime: {0}")]
     RuntimeBuild(io::Error),
     #[error(transparent)]

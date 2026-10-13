@@ -1,0 +1,25 @@
+[package]
+name = "ssh-auth-helper-lib"
+description = "Core runtime and daemon for the forwarded SSH agent helper"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+camino.workspace = true
+futures-util.workspace = true
+jiff.workspace = true
+jsonrpc-uds.workspace = true
+parking_lot.workspace = true
+rustix.workspace = true
+serde_json.workspace = true
+ssh-auth-helper-api.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
+tokio-util.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
