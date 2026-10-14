@@ -13,10 +13,7 @@ use tokio_util::codec::Framed;
 use super::*;
 
 fn response(value: json::Value) -> RpcFrame {
-    RpcFrame::Single(RpcMessage::Response(RpcResponse::success(
-        RpcId::Number(1),
-        value,
-    )))
+    RpcFrame::Single(RpcMessage::success(1, value))
 }
 
 fn rejected(text: &str, error: ProtocolError) {
@@ -229,12 +226,12 @@ fn escaped_newlines_cannot_inject_a_frame() {
 #[tokio::test(flavor = "current_thread")]
 async fn exact_limits_include_cr_and_final_eof() {
     for (size, ending, accepted) in [
-        (crate::MAX_FRAME_BYTES, b"\n".as_slice(), true),
-        (crate::MAX_FRAME_BYTES + 1, b"\n".as_slice(), false),
-        (crate::MAX_FRAME_BYTES - 1, b"\r\n".as_slice(), true),
-        (crate::MAX_FRAME_BYTES, b"\r\n".as_slice(), false),
-        (crate::MAX_FRAME_BYTES, b"".as_slice(), true),
-        (crate::MAX_FRAME_BYTES + 1, b"".as_slice(), false),
+        (MAX_FRAME_BYTES, b"\n".as_slice(), true),
+        (MAX_FRAME_BYTES + 1, b"\n".as_slice(), false),
+        (MAX_FRAME_BYTES - 1, b"\r\n".as_slice(), true),
+        (MAX_FRAME_BYTES, b"\r\n".as_slice(), false),
+        (MAX_FRAME_BYTES, b"".as_slice(), true),
+        (MAX_FRAME_BYTES + 1, b"".as_slice(), false),
     ] {
         let (mut writer, reader) = duplex(1024);
         let text = format!(
@@ -334,8 +331,8 @@ fn excessive_depth_and_invalid_outgoing_payloads_are_rejected() {
     let mut codec = JsonRpcCodec::default();
     let mut bytes = BytesMut::from(&b"existing"[..]);
     let before = bytes.clone();
-    let frame = RpcFrame::Single(RpcMessage::Request(crate::RpcRequest {
-        jsonrpc: crate::RpcVersion::V2,
+    let frame = RpcFrame::Single(RpcMessage::Request(RpcRequest {
+        jsonrpc: RpcVersion::V2,
         id: RpcId::Number(1),
         method: "hello".into(),
         params: Some(json::Value::Null),
@@ -355,8 +352,8 @@ fn excessive_depth_and_invalid_outgoing_payloads_are_rejected() {
         panic!("expected batch");
     };
     let mut messages = messages;
-    messages.push(RpcMessage::Notification(crate::RpcNotification {
-        jsonrpc: crate::RpcVersion::V2,
+    messages.push(RpcMessage::Notification(RpcNotification {
+        jsonrpc: RpcVersion::V2,
         method: "event".into(),
         params: None,
     }));

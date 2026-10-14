@@ -29,6 +29,24 @@ impl RpcId {
     }
 }
 
+impl From<u64> for RpcId {
+    fn from(value: u64) -> Self {
+        Self::Number(value)
+    }
+}
+
+impl From<String> for RpcId {
+    fn from(value: String) -> Self {
+        Self::String(value)
+    }
+}
+
+impl From<&str> for RpcId {
+    fn from(value: &str) -> Self {
+        Self::String(value.to_owned())
+    }
+}
+
 /// Standard numeric RPC errors. Data is optional ordinary JSON.
 #[derive(Debug, Deserialize, Serialize, thiserror::Error)]
 #[error("RPC error {code}: {message}")]
@@ -135,7 +153,7 @@ pub enum RpcResponse {
 }
 
 impl RpcResponse {
-    pub fn success(id: RpcId, result: json::Value) -> Self {
+    fn success(id: RpcId, result: json::Value) -> Self {
         Self::Success {
             jsonrpc: RpcVersion::V2,
             id,
@@ -143,12 +161,18 @@ impl RpcResponse {
         }
     }
 
-    pub fn error(id: RpcId, error: impl Into<RpcError>) -> Self {
-        let error = error.into();
+    fn error(id: RpcId, error: RpcError) -> Self {
         Self::Error {
             jsonrpc: RpcVersion::V2,
             id,
             error,
+        }
+    }
+
+    fn into_result(self) -> (RpcId, Result<json::Value, RpcError>) {
+        match self {
+            Self::Success { id, result, .. } => (id, Ok(result)),
+            Self::Error { id, error, .. } => (id, Err(error)),
         }
     }
 
@@ -190,6 +214,13 @@ impl RpcFrame {
             }
         }
     }
+
+    pub fn into_single(self) -> Option<RpcMessage> {
+        match self {
+            RpcFrame::Single(message) => Some(message),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -211,8 +242,36 @@ impl RpcMessage {
         Self::Request(RpcRequest::new(id, method, params))
     }
 
-    pub fn error_response(error: impl Into<RpcError>) -> Self {
-        Self::Response(RpcResponse::error(RpcId::Null, error))
+    pub fn success(id: impl Into<RpcId>, result: json::Value) -> Self {
+        let id = id.into();
+        Self::Response(RpcResponse::success(id, result))
+    }
+
+    pub fn error(id: impl Into<RpcId>, error: impl Into<RpcError>) -> Self {
+        let id = id.into();
+        let error = error.into();
+        Self::Response(RpcResponse::error(id, error))
+    }
+
+    pub fn from_result(
+        id: impl Into<RpcId>,
+        result: Result<json::Value, impl Into<RpcError>>,
+    ) -> Self {
+        match result {
+            Ok(result) => Self::success(id, result),
+            Err(error) => Self::error(id, error),
+        }
+    }
+
+    pub fn into_result(self) -> Option<(RpcId, Result<json::Value, RpcError>)> {
+        self.into_response().map(|response| response.into_result())
+    }
+
+    fn into_response(self) -> Option<RpcResponse> {
+        match self {
+            Self::Response(response) => Some(response),
+            _ => None,
+        }
     }
 
     pub(crate) fn is_valid(&self) -> bool {

@@ -1,7 +1,6 @@
 //! CLI parsing, explicit output and foreground serving.
 
 use clap::Args;
-use clap::Parser;
 use clap::Subcommand;
 
 use super::*;

@@ -16,7 +16,6 @@ use jsonrpc_uds::RpcError;
 use jsonrpc_uds::RpcFrame;
 use jsonrpc_uds::RpcId;
 use jsonrpc_uds::RpcMessage;
-use jsonrpc_uds::RpcResponse;
 use jsonrpc_uds::TransportError;
 use ssh_auth_helper_api::HELLO_METHOD;
 use ssh_auth_helper_api::HelloRequest;
@@ -98,22 +97,16 @@ async fn query_hello(
     let id = RpcId::String(Uuid::new_v4().to_string());
     let frame = RpcFrame::request(&id, HELLO_METHOD, None);
     timeout_at(deadline, wire.send(frame)).await??;
-    let reply = timeout_at(deadline, wire.next())
+    timeout_at(deadline, wire.next())
         .await?
-        .ok_or(ControlError::InvalidReply)??;
-    match reply {
-        RpcFrame::Single(RpcMessage::Response(RpcResponse::Success {
-            id: reply_id,
-            result,
-            ..
-        })) if reply_id == id => json::from_value(result).map_err(|_| ControlError::InvalidReply),
-        RpcFrame::Single(RpcMessage::Response(RpcResponse::Error {
-            id: reply_id,
-            error,
-            ..
-        })) if reply_id == id => Err(ControlError::Rpc(error)),
-        _ => Err(ControlError::InvalidReply),
-    }
+        .ok_or(ControlError::InvalidReply)??
+        .into_single()
+        .ok_or(ControlError::InvalidReply)?
+        .into_result()
+        .and_then(|(reply_id, result)| (reply_id == id).then_some(result))
+        .ok_or(ControlError::InvalidReply)?
+        .map_err(ControlError::Rpc)
+        .and_then(|result| json::from_value(result).map_err(|_| ControlError::InvalidReply))
 }
 
 fn execute(message: RpcMessage, hello: &HelloResponse) -> Result<Option<RpcMessage>, ControlError> {
@@ -121,27 +114,23 @@ fn execute(message: RpcMessage, hello: &HelloResponse) -> Result<Option<RpcMessa
         RpcMessage::Request(request) => (request.method, request.params, Some(request.id)),
         RpcMessage::Notification(notification) => (notification.method, notification.params, None),
         RpcMessage::Invalid(error) => {
-            return Ok(Some(RpcMessage::error_response(error)));
+            return Ok(Some(RpcMessage::error(RpcId::Null, error)));
         }
         RpcMessage::Response(_) => {
-            return Ok(Some(RpcMessage::error_response(
+            return Ok(Some(RpcMessage::error(
+                RpcId::Null,
                 ProtocolError::InvalidRequest,
             )));
         }
     };
-    let outcome = if method != HELLO_METHOD {
+    let result = if method != HELLO_METHOD {
         Err(RpcError::new(-32601, "Method not found"))
     } else if json::from_value::<HelloRequest>(params.unwrap_or_else(|| json::json!({}))).is_err() {
         Err(RpcError::new(-32602, "Invalid params"))
     } else {
         json::to_value(hello).map_err(|_| RpcError::new(-32603, "Internal error"))
     };
-    Ok(id.map(|id| {
-        RpcMessage::Response(match outcome {
-            Ok(result) => RpcResponse::success(id, result),
-            Err(error) => RpcResponse::error(id, error),
-        })
-    }))
+    Ok(id.map(|id| RpcMessage::from_result(id, result)))
 }
 
 // This application-local function keeps batch policy out of the codec. The

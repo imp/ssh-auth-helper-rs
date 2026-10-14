@@ -11,12 +11,12 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const HELLO_METHOD: &str = "hello";
 
 /// Hello has no application parameters.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HelloRequest {}
 
 /// Public endpoint paths; constructing these values does not validate filesystem safety.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Endpoints {
     pub agent: Utf8PathBuf,
@@ -24,7 +24,7 @@ pub struct Endpoints {
 }
 
 /// Initialized listeners. Readiness does not imply an available upstream agent.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HelloResponse {
     pub instance: Uuid,

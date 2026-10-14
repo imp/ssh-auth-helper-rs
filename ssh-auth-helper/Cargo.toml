@@ -1,8 +1,8 @@
 [package]
 name = "ssh-auth-helper"
-description = "Command-line entry point for the forwarded SSH agent helper"
 version.workspace = true
 edition.workspace = true
+description = "Command-line entry point for the forwarded SSH agent helper"
 
 [dependencies]
 camino.workspace = true
@@ -15,8 +15,8 @@ tokio = { workspace = true, features = ["rt"] }
 rustix.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-uuid = { workspace = true, features = ["v4"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "time"] }
+uuid = { workspace = true, features = ["v4"] }
 
 [lints]
 workspace = true

@@ -94,10 +94,8 @@ fn oversized_aggregate_stops_execution_and_emits_no_partial_reply() {
             let RpcMessage::Request(request) = message else {
                 panic!("expected request");
             };
-            Ok(Some(RpcMessage::Response(RpcResponse::success(
-                request.id,
-                json::Value::String("x".repeat(150)),
-            ))))
+            let result = json::Value::String("x".repeat(150));
+            Ok(Some(RpcMessage::success(request.id, result)))
         },
     );
     assert!(matches!(
