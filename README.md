@@ -4,9 +4,9 @@ A Rust helper under development for keeping a stable SSH agent socket usable
 across remote SSH connections and long-lived tmux sessions.
 
 The current CLI provides path discovery and a foreground daemon with private
-sockets, singleton locking, bounded control readiness, crash recovery, and
-identity-checked cleanup. Upstream registration and SSH agent forwarding are
-not implemented yet.
+sockets, singleton locking, bounded control readiness, crash recovery,
+identity-checked cleanup and socket registration/status. Agent probing,
+selection, forwarding and automatic detached startup are not implemented yet.
 
 ```sh
 cargo run -p ssh-auth-helper --locked -- socket-path
@@ -59,8 +59,8 @@ with socket.socket(socket.AF_UNIX) as client:
 The reply contains the daemon instance UUID, `ready`, and both endpoint paths.
 Readiness means listeners/handlers are initialized, not that a forwarded agent
 is available. Agent clients currently close immediately without a fabricated
-reply. Only `hello` is implemented on the control socket; other operations
-return JSON-RPC `Method not found` (-32601). Envelopes require exactly
+reply. The control socket supports `hello`, `register`, `unregister` and `status`;
+other operations return JSON-RPC `Method not found` (-32601). Envelopes require exactly
 `jsonrpc: "2.0"`; responses contain one result or error and echo the request ID.
 IDs may be nonempty strings of 1..128 UTF-8 bytes, unsigned integers or null.
 Negative/fractional IDs are outside this documented profile. An absent ID is
@@ -83,6 +83,55 @@ later valid call unless a framing error closes the stream. Outgoing replies obey
 the same 64 KiB limit; overflow closes the stream without sending a partial frame.
 Clients never automatically replay uncertain operations. Startup/readiness
 checks share a five-second budget.
+
+With the foreground daemon running, register an original SSH-forwarded socket
+from another terminal:
+
+```sh
+ssh-auth-helper --runtime-dir /tmp/my-helper register --socket "$SSH_AUTH_SOCK" --label laptop --json
+ssh-auth-helper --runtime-dir /tmp/my-helper status --json
+ssh-auth-helper --runtime-dir /tmp/my-helper unregister INSTANCE_UUID/REGISTRATION_UUID
+```
+
+`register` defaults to the `SSH_AUTH_SOCK` captured by Clap; an explicit
+`--socket` overrides it. The selected path must be absolute UTF-8 and resolve
+to a current-user-owned Unix socket. Direct paths, symlinks and hard links to
+either helper endpoint are rejected. Successful registration and unregistration
+produce no stdout unless `--json` is requested. `status` prints a concise summary
+by default. These commands require an already running daemon and do not start one.
+
+Repeat registration of the same device/inode returns its original ID and
+metadata without changing its order. Replacement at the same path retires the
+old entry and creates a new instance-qualified ID. Unregister is idempotent;
+an old or foreign-instance ID cannot remove a replacement. A daemon restart
+loses its registry; surviving original sockets need to be registered again.
+Register the original forwarded socket, rather than the helper's stable socket.
+
+The registry holds at most 64 candidates and 64 recent retirements. Labels are
+limited to 128 UTF-8 bytes. A snapshot-size budget also applies: old retirement
+records are trimmed first, and registration is rejected without mutation if
+the remaining snapshot would exceed the control-message budget. Socket
+validation and snapshot preparation must finish before the mutation deadline.
+Use local filesystem socket paths. Registration does not connect to an agent;
+health is `unobserved`, no observation time is claimed, and active selection and
+relay counts remain empty/zero until forwarding is implemented.
+
+Application errors carry metadata-only `error.data.kind` values:
+
+| Code | Kind | Meaning |
+| --- | --- | --- |
+| -32001 | `unsafe_path` | Missing, invalid, non-socket or foreign-owned upstream |
+| -32002 | `recursive_upstream` | Helper endpoint or its filesystem alias |
+| -32003 | `capacity_exceeded` | Candidate or snapshot-size capacity exhausted |
+| -32004 | `deadline_exceeded` | Operation budget exhausted before mutation |
+| -32602 | `label_too_long` | Label exceeds 128 UTF-8 bytes |
+
+Management clients authorize the peer and validate hello before sending a
+correlated operation on that same connection. Connect, hello and the operation
+share a two-second deadline. Every return closes the connection. A missing or
+invalid response after registration/unregistration can leave an uncertain
+outcome; clients report failure and never automatically replay the mutation.
+Inspect `status` before deciding whether to issue another command.
 
 Use stable Rust, selected by `rust-toolchain.toml`:
 
@@ -113,7 +162,7 @@ payloads. Readiness sends one identified request and checks its response under
 one absolute connect/send/receive budget. Every return closes that connection;
 there are no background client tasks or automatic request replays.
 
-Registry, selection, watch and agent relay implementations follow next.
+Detached startup, selection, watch and agent relay implementations follow next.
 
 The selected foundation uses Camino paths, parking_lot for short shared-state
 locks, Jiff UTC timestamps, and Tokio for asynchronous I/O and monotonic

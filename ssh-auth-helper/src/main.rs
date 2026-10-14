@@ -10,9 +10,11 @@ use ssh_auth_helper_lib::runtime::RuntimePaths;
 
 mod cli;
 
-fn main() -> ExitCode {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
     cli::Cli::parse()
         .run()
+        .await
         .inspect_err(|error| eprintln!("ssh-auth-helper: {error}"))
         .map_or(ExitCode::FAILURE, |()| ExitCode::SUCCESS)
 }

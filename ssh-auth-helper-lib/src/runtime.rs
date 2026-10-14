@@ -17,9 +17,9 @@ pub use startup::RuntimeSockets;
 mod startup;
 
 #[cfg(target_os = "macos")]
-const MAX_SOCKET_PATH_BYTES: usize = 103;
+pub(crate) const MAX_SOCKET_PATH_BYTES: usize = 103;
 #[cfg(not(target_os = "macos"))]
-const MAX_SOCKET_PATH_BYTES: usize = 107;
+pub(crate) const MAX_SOCKET_PATH_BYTES: usize = 107;
 const MAX_ANCESTOR_SYMLINKS: usize = 40;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -366,7 +366,7 @@ fn default_directory() -> Utf8PathBuf {
 
 /// Check path syntax without accessing the filesystem. Directory creation,
 /// ownership, permissions, and safe symlink handling belong to startup.
-fn validate_directory_syntax(path: &Utf8Path) -> Result<(), RuntimeError> {
+pub(crate) fn validate_directory_syntax(path: &Utf8Path) -> Result<(), RuntimeError> {
     if !path.is_absolute() {
         return Err(RuntimeError::InvalidPath(
             "runtime directory must be absolute",

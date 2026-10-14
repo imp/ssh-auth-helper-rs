@@ -558,6 +558,7 @@ name = "ssh-auth-helper-api"
 version = "0.1.0"
 dependencies = [
  "camino",
+ "jiff",
  "serde",
  "serde_json",
  "uuid",

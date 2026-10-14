@@ -1,8 +1,8 @@
 //! Foundation for a per-user forwarded SSH agent proxy.
 //!
 //! The library provides the daemon, bounded readiness and safe runtime ownership.
-//! The separate CLI crate provides foreground serving and socket-path discovery.
-//! Upstream registration, health checks and relaying are not implemented yet.
+//! The separate CLI crate provides foreground serving, management commands and path discovery.
+//! Socket registration and basic management are available; probing and relaying are pending.
 
 use std::ffi;
 use std::io;
@@ -23,4 +23,5 @@ use runtime::RuntimeSockets;
 
 pub mod control;
 pub mod daemon;
+mod registry;
 pub mod runtime;

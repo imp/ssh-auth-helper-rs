@@ -1,4 +1,4 @@
-//! Foreground daemon supervision. Upstream registration and relays are pending.
+//! Foreground daemon supervision and shared registry ownership. Relays are pending.
 
 use std::sync::Arc;
 
@@ -8,6 +8,7 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 
 use super::*;
+use registry::State;
 
 const MAX_CONTROL_CLIENTS: usize = 32;
 
@@ -36,7 +37,13 @@ pub async fn serve_until(
     let directory = RuntimeDirectory::prepare(paths)?;
     let lock = RuntimeLock::acquire(directory)?;
     let sockets = RuntimeSockets::bind(lock, deadline).await?;
-    let hello = Arc::new(control::hello_response(sockets.directory().paths()));
+    let state = match State::new(control::hello_response(sockets.directory().paths())) {
+        Ok(state) => Arc::new(state),
+        Err(error) => {
+            sockets.cleanup()?;
+            return Err(error.into());
+        }
+    };
     let mut tasks = JoinSet::new();
     tokio::pin!(shutdown);
     let result = loop {
@@ -46,15 +53,15 @@ pub async fn serve_until(
                 let (stream, _) = match accepted { Ok(accepted) => accepted, Err(error) => break Err(DaemonError::Io(error)) };
                 if sockets.directory().authorize_peer(&stream).is_err() { continue }
                 if tasks.len() >= MAX_CONTROL_CLIENTS { continue }
-                let hello = Arc::clone(&hello);
+                let state = Arc::clone(&state);
                 tasks.spawn(async move {
                     // Malformed or disconnected peers affect their connection only.
-                    let _ = control::handle(stream, &hello).await;
+                    let _ = control::handle(stream, &state).await;
                 });
             }
             accepted = sockets.agent_listener().accept() => {
                 let (stream, _) = match accepted { Ok(accepted) => accepted, Err(error) => break Err(DaemonError::Io(error)) };
-                // This increment has no upstreams. Authorize before handling traffic
+                // Agent probing and relay are pending. Authorize before handling traffic
                 // and close immediately; never fabricate agent protocol responses.
                 if sockets.directory().authorize_peer(&stream).is_err() { continue }
                 drop(stream);
@@ -88,6 +95,8 @@ pub async fn serve_until(
 
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
+    #[error(transparent)]
+    Registry(#[from] registry::RegistryError),
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
     #[error("daemon I/O failed: {0}")]

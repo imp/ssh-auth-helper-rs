@@ -342,6 +342,10 @@ async fn control_errors_and_stalled_peers_do_not_block_readiness() {
         ),
         (
             "{\"jsonrpc\":\"2.0\",\"id\":\"o\",\"method\":\"register\"}\n",
+            -32602,
+        ),
+        (
+            "{\"jsonrpc\":\"2.0\",\"id\":\"u\",\"method\":\"unknown\"}\n",
             -32601,
         ),
     ] {

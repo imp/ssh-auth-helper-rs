@@ -1,4 +1,4 @@
-//! JSON-RPC readiness and helper method dispatch. Registry operations come next.
+//! JSON-RPC readiness, basic management and bounded single-call clients.
 
 use futures_util::SinkExt;
 use futures_util::StreamExt;
@@ -18,12 +18,24 @@ use jsonrpc_uds::TransportError;
 use ssh_auth_helper_api::HELLO_METHOD;
 use ssh_auth_helper_api::HelloRequest;
 use ssh_auth_helper_api::PROTOCOL_VERSION;
+use ssh_auth_helper_api::REGISTER_METHOD;
+use ssh_auth_helper_api::STATUS_METHOD;
+use ssh_auth_helper_api::StatusRequest;
+use ssh_auth_helper_api::UNREGISTER_METHOD;
+
+pub use ssh_auth_helper_api::RegisterRequest;
+pub use ssh_auth_helper_api::RegisterResponse;
+pub use ssh_auth_helper_api::RegistrationId;
+pub use ssh_auth_helper_api::StatusResponse;
+pub use ssh_auth_helper_api::UnregisterRequest;
+pub use ssh_auth_helper_api::UnregisterResponse;
 
 pub use jsonrpc_uds::MAX_FRAME_BYTES;
 pub use ssh_auth_helper_api::Endpoints;
 pub use ssh_auth_helper_api::HelloResponse;
 
 use super::*;
+use registry::State;
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -74,6 +86,11 @@ async fn hello_once(
     let stream = timeout_at(deadline, net::UnixStream::connect(paths.control())).await??;
     runtime::authorize_peer_uid(&stream, rustix::process::getuid().as_raw())?;
     let hello = query_hello(stream, deadline).await?;
+    validate_hello(paths, &hello)?;
+    Ok(hello)
+}
+
+fn validate_hello(paths: &RuntimePaths, hello: &HelloResponse) -> Result<(), ControlError> {
     if !hello.ready
         || hello.instance.is_nil()
         || !hello.supported_versions.contains(&PROTOCOL_VERSION)
@@ -82,7 +99,7 @@ async fn hello_once(
     {
         return Err(ControlError::InvalidReply);
     }
-    Ok(hello)
+    Ok(())
 }
 
 // Own the stream so every return, including timeout or invalid reply, closes it.
@@ -92,9 +109,22 @@ async fn query_hello(
     deadline: Instant,
 ) -> Result<HelloResponse, ControlError> {
     let mut wire = Framed::new(stream, JsonRpcCodec::default());
+    let result = query(&mut wire, HELLO_METHOD, None, deadline).await?;
+    json::from_value(result).map_err(|_| ControlError::InvalidReply)
+}
+
+async fn query(
+    wire: &mut Framed<net::UnixStream, JsonRpcCodec>,
+    method: &str,
+    params: Option<json::Value>,
+    deadline: Instant,
+) -> Result<json::Value, ControlError> {
     let id = RpcId::String(Uuid::new_v4().to_string());
-    let message = RpcMessage::request(&id, HELLO_METHOD, None);
-    timeout_at(deadline, wire.send(message)).await??;
+    timeout_at(
+        deadline,
+        wire.send(RpcMessage::request(&id, method, params)),
+    )
+    .await??;
     timeout_at(deadline, wire.next())
         .await?
         .ok_or(ControlError::InvalidReply)??
@@ -102,10 +132,97 @@ async fn query_hello(
         .and_then(|(reply_id, result)| (reply_id == id).then_some(result))
         .ok_or(ControlError::InvalidReply)?
         .map_err(ControlError::Rpc)
-        .and_then(|result| json::from_value(result).map_err(|_| ControlError::InvalidReply))
 }
 
-fn execute(message: RpcMessage, hello: &HelloResponse) -> Result<Option<RpcMessage>, ControlError> {
+// One authenticated connection and absolute deadline. Never retry a mutating call.
+struct Client {
+    wire: Framed<net::UnixStream, JsonRpcCodec>,
+    hello: HelloResponse,
+    deadline: Instant,
+}
+
+impl Client {
+    async fn connect(paths: &RuntimePaths) -> Result<Self, ControlError> {
+        let deadline = Instant::now() + REQUEST_TIMEOUT;
+        let stream = timeout_at(deadline, net::UnixStream::connect(paths.control())).await??;
+        runtime::authorize_peer_uid(&stream, rustix::process::getuid().as_raw())?;
+        let mut wire = Framed::new(stream, JsonRpcCodec::default());
+        let result = query(&mut wire, HELLO_METHOD, None, deadline).await?;
+        let hello = json::from_value(result).map_err(|_| ControlError::InvalidReply)?;
+        validate_hello(paths, &hello)?;
+        Ok(Self {
+            wire,
+            hello,
+            deadline,
+        })
+    }
+
+    async fn call(
+        &mut self,
+        method: &str,
+        params: json::Value,
+    ) -> Result<json::Value, ControlError> {
+        query(&mut self.wire, method, Some(params), self.deadline).await
+    }
+}
+
+/// Register a socket with an already running same-user foreground daemon.
+///
+/// # Errors
+/// Reports invalid readiness, RPC rejection, transport failure or deadline expiry.
+pub async fn register(
+    paths: &RuntimePaths,
+    request: RegisterRequest,
+) -> Result<RegisterResponse, ControlError> {
+    let mut client = Client::connect(paths).await?;
+    let result = client
+        .call(REGISTER_METHOD, json::to_value(request)?)
+        .await?;
+    let response: RegisterResponse =
+        json::from_value(result).map_err(|_| ControlError::InvalidReply)?;
+    if response.registration.id.instance() != client.hello.instance {
+        return Err(ControlError::InvalidReply);
+    }
+    Ok(response)
+}
+
+/// Idempotently unregister an ID; never automatically replay an uncertain call.
+///
+/// # Errors
+/// Reports readiness, RPC, transport or deadline failures.
+pub async fn unregister(
+    paths: &RuntimePaths,
+    request: UnregisterRequest,
+) -> Result<UnregisterResponse, ControlError> {
+    let mut client = Client::connect(paths).await?;
+    let result = client
+        .call(UNREGISTER_METHOD, json::to_value(request)?)
+        .await?;
+    json::from_value(result).map_err(|_| ControlError::InvalidReply)
+}
+
+/// Inspect bounded registry metadata without probing any upstream socket.
+///
+/// # Errors
+/// Reports readiness, RPC, transport or deadline failures.
+pub async fn status(paths: &RuntimePaths) -> Result<StatusResponse, ControlError> {
+    let mut client = Client::connect(paths).await?;
+    let result = client
+        .call(STATUS_METHOD, json::to_value(StatusRequest {})?)
+        .await?;
+    let response: StatusResponse =
+        json::from_value(result).map_err(|_| ControlError::InvalidReply)?;
+    if response.instance != client.hello.instance || response.endpoints != client.hello.endpoints {
+        return Err(ControlError::InvalidReply);
+    }
+    Ok(response)
+}
+
+fn execute(
+    message: RpcMessage,
+    state: &State,
+    deadline: Instant,
+) -> Result<Option<RpcMessage>, ControlError> {
     let (method, params, id) = match message {
         RpcMessage::Request(request) => (request.method, request.params, Some(request.id)),
         RpcMessage::Notification(notification) => (notification.method, notification.params, None),
@@ -119,38 +236,46 @@ fn execute(message: RpcMessage, hello: &HelloResponse) -> Result<Option<RpcMessa
             )));
         }
     };
-    let result = if method != HELLO_METHOD {
-        Err(RpcError::new(-32601, "Method not found"))
-    } else if json::from_value::<HelloRequest>(params.unwrap_or_else(|| json::json!({}))).is_err() {
-        Err(RpcError::new(-32602, "Invalid params"))
-    } else {
-        json::to_value(hello).map_err(|_| RpcError::new(-32603, "Internal error"))
+    let params = params.unwrap_or_else(|| json::json!({}));
+    let result = match method.as_str() {
+        HELLO_METHOD => json::from_value::<HelloRequest>(params)
+            .map_err(|_| RpcError::new(-32602, "Invalid params"))
+            .and_then(|_| json::to_value(&state.hello).map_err(internal_error)),
+        REGISTER_METHOD => json::from_value::<RegisterRequest>(params)
+            .map_err(|_| RpcError::new(-32602, "Invalid params"))
+            .and_then(|request| state.register(request, deadline).map_err(Into::into))
+            .and_then(|response| json::to_value(response).map_err(internal_error)),
+        UNREGISTER_METHOD => json::from_value::<UnregisterRequest>(params)
+            .map_err(|_| RpcError::new(-32602, "Invalid params"))
+            .and_then(|request| state.unregister(&request.id, deadline).map_err(Into::into))
+            .and_then(|response| json::to_value(response).map_err(internal_error)),
+        STATUS_METHOD => json::from_value::<StatusRequest>(params)
+            .map_err(|_| RpcError::new(-32602, "Invalid params"))
+            .and_then(|_| json::to_value(state.status()).map_err(internal_error)),
+        _ => Err(RpcError::new(-32601, "Method not found")),
     };
     Ok(id.map(|id| RpcMessage::from_result(id, result)))
 }
 
 fn dispatch(
     message: RpcMessage,
-    hello: &HelloResponse,
+    state: &State,
     deadline: Instant,
 ) -> Result<Option<RpcMessage>, ControlError> {
     if Instant::now() >= deadline {
         return Err(ControlError::Timeout);
     }
-    let reply = execute(message, hello)?;
+    let reply = execute(message, state, deadline)?;
     if Instant::now() >= deadline {
         return Err(ControlError::Timeout);
     }
     Ok(reply)
 }
 
-pub(crate) async fn handle(
-    stream: net::UnixStream,
-    hello: &HelloResponse,
-) -> Result<(), ControlError> {
+pub(crate) async fn handle(stream: net::UnixStream, state: &State) -> Result<(), ControlError> {
     let mut wire = Framed::new(stream, JsonRpcCodec::default());
     while let Some(message) = timeout_at(Instant::now() + REQUEST_TIMEOUT, wire.next()).await? {
-        let reply = dispatch(message?, hello, Instant::now() + REQUEST_TIMEOUT)?;
+        let reply = dispatch(message?, state, Instant::now() + REQUEST_TIMEOUT)?;
         if let Some(reply) = reply {
             timeout_at(Instant::now() + REQUEST_TIMEOUT, wire.send(reply)).await??;
         }
@@ -158,8 +283,14 @@ pub(crate) async fn handle(
     Ok(())
 }
 
+fn internal_error(_error: json::Error) -> RpcError {
+    RpcError::new(-32603, "Internal error")
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ControlError {
+    #[error("cannot encode management request: {0}")]
+    Json(#[from] json::Error),
     #[error("control I/O failed: {0}")]
     Io(#[from] io::Error),
     #[error(transparent)]
@@ -170,7 +301,7 @@ pub enum ControlError {
     Rpc(RpcError),
     #[error("control deadline exceeded")]
     Timeout,
-    #[error("invalid or incompatible daemon readiness reply")]
+    #[error("invalid or incompatible daemon reply")]
     InvalidReply,
 }
 

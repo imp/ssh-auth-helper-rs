@@ -1,7 +1,7 @@
 use super::*;
 
-fn hello() -> HelloResponse {
-    HelloResponse {
+fn hello() -> State {
+    State::fixture(HelloResponse {
         instance: Uuid::new_v4(),
         supported_versions: vec![PROTOCOL_VERSION],
         ready: true,
@@ -9,10 +9,10 @@ fn hello() -> HelloResponse {
             agent: "/tmp/agent".into(),
             control: "/tmp/control".into(),
         },
-    }
+    })
 }
 
-fn exchange(text: &str, hello: &HelloResponse) -> Option<json::Value> {
+fn exchange(text: &str, hello: &State) -> Option<json::Value> {
     dispatch(
         JsonRpcCodec::default().parse(text).unwrap(),
         hello,
@@ -165,7 +165,7 @@ async fn oversized_reply_closes_without_queuing_a_partial_frame() {
     let (client, server) = net::UnixStream::pair().unwrap();
     let task = tokio::spawn(async move {
         let mut hello = hello();
-        hello.endpoints.agent = format!("/{}", "x".repeat(MAX_FRAME_BYTES)).into();
+        hello.hello.endpoints.agent = format!("/{}", "x".repeat(MAX_FRAME_BYTES)).into();
         handle(server, &hello).await
     });
     let mut client = Framed::new(client, JsonRpcCodec::default());
