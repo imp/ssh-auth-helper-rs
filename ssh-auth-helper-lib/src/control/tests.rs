@@ -12,141 +12,79 @@ fn hello() -> HelloResponse {
     }
 }
 
-fn exchange(
-    text: &str,
-    hello: &HelloResponse,
-) -> (Option<json::Value>, usize, Result<(), ControlError>) {
-    let codec = JsonRpcCodec::default();
-    let mut count = 0;
-    let outcome = dispatch(
-        codec.parse(text).unwrap(),
-        &codec,
+fn exchange(text: &str, hello: &HelloResponse) -> Option<json::Value> {
+    dispatch(
+        JsonRpcCodec::default().parse(text).unwrap(),
+        hello,
         Instant::now() + REQUEST_TIMEOUT,
-        MAX_FRAME_BYTES,
-        |message| {
-            if matches!(
-                message,
-                RpcMessage::Request(_) | RpcMessage::Notification(_)
-            ) {
-                count += 1;
-            }
-            execute(message, hello)
-        },
-    );
-    match outcome {
-        Ok(reply) => (
-            reply.map(|reply| json::to_value(reply).unwrap()),
-            count,
-            Ok(()),
-        ),
-        Err(error) => (None, count, Err(error)),
+    )
+    .unwrap()
+    .map(|reply| json::to_value(reply).unwrap())
+}
+
+#[test]
+fn null_ids_are_preserved_and_notification_errors_are_silent() {
+    let hello = hello();
+    let reply = exchange(r#"{"jsonrpc":"2.0","method":"hello","id":null}"#, &hello).unwrap();
+    assert!(reply["id"].is_null());
+    assert_eq!(reply["result"]["ready"], true);
+    for text in [
+        r#"{"jsonrpc":"2.0","method":"hello"}"#,
+        r#"{"jsonrpc":"2.0","method":"unknown"}"#,
+        r#"{"jsonrpc":"2.0","method":"hello","params":{"unexpected":true}}"#,
+    ] {
+        assert!(exchange(text, &hello).is_none());
     }
 }
 
 #[test]
-fn mixed_batches_preserve_null_ids_and_omit_notification_errors() {
-    let (reply, count, outcome) = exchange(
-        r#"[{"jsonrpc":"2.0","method":"unknown"},{"jsonrpc":"2.0","method":"hello","id":null},17]"#,
-        &hello(),
-    );
-    outcome.unwrap();
-    let reply = reply.unwrap();
-    assert_eq!(count, 2);
-    assert_eq!(reply.as_array().unwrap().len(), 2);
-    assert!(reply[0]["id"].is_null());
-    assert_eq!(reply[0]["result"]["ready"], true);
-    assert_eq!(reply[1]["error"]["code"], -32600);
-    let (reply, count, outcome) = exchange(
-        r#"[{"jsonrpc":"2.0","method":"hello"},{"jsonrpc":"2.0","method":"unknown"}]"#,
-        &hello(),
-    );
-    outcome.unwrap();
-    assert_eq!(count, 2);
-    assert!(reply.is_none());
-}
-
-#[test]
-fn invalid_batches_do_not_execute_members() {
-    let too_many = format!(
-        "[{}]",
-        vec![r#"{"jsonrpc":"2.0","method":"hello","id":1}"#; 33].join(",")
-    );
-    for text in ["[]", too_many.as_str()] {
-        let (reply, count, outcome) = exchange(text, &hello());
-        outcome.unwrap();
-        assert_eq!(count, 0);
-        assert_eq!(reply.unwrap()["error"]["code"], -32600);
+fn unsupported_batches_and_other_non_messages_return_one_error() {
+    for text in [
+        "[]",
+        r#"[{"jsonrpc":"2.0","method":"hello","id":1}]"#,
+        r#"[{"jsonrpc":"2.0","method":"hello"},{"jsonrpc":"2.0","method":"hello","id":1},17]"#,
+        "17",
+        "null",
+        "true",
+        r#""hello""#,
+        "{}",
+    ] {
+        let reply = exchange(text, &hello()).unwrap();
+        assert_eq!(
+            reply,
+            json::json!({
+                "jsonrpc": "2.0",
+                "id": null,
+                "error": {"code": -32600, "message": "Invalid Request"},
+            }),
+            "{text}"
+        );
     }
-}
-
-#[test]
-fn oversized_aggregate_stops_execution_and_emits_no_partial_reply() {
-    let codec = JsonRpcCodec::default();
-    let frame = codec.parse(r#"[{"jsonrpc":"2.0","method":"hello","id":1},{"jsonrpc":"2.0","method":"hello","id":2},{"jsonrpc":"2.0","method":"hello","id":3}]"#).unwrap();
-    let mut count = 0;
-    let outcome = dispatch(
-        frame,
-        &codec,
-        Instant::now() + REQUEST_TIMEOUT,
-        256,
-        |message| {
-            count += 1;
-            let RpcMessage::Request(request) = message else {
-                panic!("expected request");
-            };
-            let result = json::Value::String("x".repeat(150));
-            Ok(Some(RpcMessage::success(request.id, result)))
-        },
-    );
-    assert!(matches!(
-        outcome,
-        Err(ControlError::Transport(TransportError::TooLarge))
-    ));
-    assert_eq!(count, 2);
 }
 
 #[test]
 fn expired_dispatch_budget_prevents_execution() {
-    let codec = JsonRpcCodec::default();
-    let frame = codec
-        .parse(r#"{"jsonrpc":"2.0","method":"hello","id":1}"#)
-        .unwrap();
-    let outcome = dispatch(frame, &codec, Instant::now(), MAX_FRAME_BYTES, |_| {
-        panic!("must not execute")
-    });
+    let message = RpcMessage::request(&RpcId::Number(1), HELLO_METHOD, None);
+    let outcome = dispatch(message, &hello(), Instant::now());
     assert!(matches!(outcome, Err(ControlError::Timeout)));
-}
-
-#[test]
-fn batch_members_share_one_dispatch_budget() {
-    let codec = JsonRpcCodec::default();
-    let frame = codec.parse(r#"[{"jsonrpc":"2.0","method":"hello","id":1},{"jsonrpc":"2.0","method":"hello","id":2}]"#).unwrap();
-    let deadline = Instant::now() + Duration::from_millis(50);
-    let mut count = 0;
-    let outcome = dispatch(frame, &codec, deadline, MAX_FRAME_BYTES, |_| {
-        count += 1;
-        std::thread::sleep(Duration::from_millis(60));
-        Ok(None)
-    });
-    assert!(matches!(outcome, Err(ControlError::Timeout)));
-    assert_eq!(count, 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn notification_batches_are_silent_and_later_calls_still_work() {
+async fn notifications_are_silent_and_later_calls_still_work() {
     let (client, server) = net::UnixStream::pair().unwrap();
     let task = tokio::spawn(async move { handle(server, &hello()).await });
     let mut client = Framed::new(client, JsonRpcCodec::default());
-    let notifications = client
-        .codec()
-        .parse(r#"[{"jsonrpc":"2.0","method":"hello"},{"jsonrpc":"2.0","method":"unknown"}]"#)
+    for text in [
+        r#"{"jsonrpc":"2.0","method":"hello"}"#,
+        r#"{"jsonrpc":"2.0","method":"unknown"}"#,
+    ] {
+        let notification = client.codec().parse(text).unwrap();
+        client.send(notification).await.unwrap();
+    }
+    client
+        .send(RpcMessage::request(&RpcId::Number(1), HELLO_METHOD, None))
+        .await
         .unwrap();
-    client.send(notifications).await.unwrap();
-    let call = client
-        .codec()
-        .parse(r#"{"jsonrpc":"2.0","id":1,"method":"hello"}"#)
-        .unwrap();
-    client.send(call).await.unwrap();
     use tokio::io::AsyncWriteExt;
     client.get_mut().shutdown().await.unwrap();
     let reply = timeout_at(Instant::now() + REQUEST_TIMEOUT, client.next())
@@ -154,10 +92,65 @@ async fn notification_batches_are_silent_and_later_calls_still_work() {
         .unwrap()
         .unwrap()
         .unwrap();
-    let RpcFrame::Single(RpcMessage::Response(reply)) = reply else {
+    let RpcMessage::Response(reply) = reply else {
         panic!("expected reply to call only");
     };
     assert_eq!(reply.id(), &RpcId::Number(1));
+    assert!(
+        timeout_at(Instant::now() + REQUEST_TIMEOUT, client.next())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejected_lines_do_not_prevent_a_later_call_on_the_same_connection() {
+    use tokio::io::AsyncWriteExt;
+    use tokio_util::codec::LinesCodec;
+
+    let (client, server) = net::UnixStream::pair().unwrap();
+    let task = tokio::spawn(async move { handle(server, &hello()).await });
+    let mut client = Framed::new(client, LinesCodec::new_with_max_length(MAX_FRAME_BYTES));
+    for (text, code) in [
+        (
+            r#"[{"jsonrpc":"2.0","method":"hello","id":1},{"jsonrpc":"2.0","method":"hello","id":2}]"#,
+            -32600,
+        ),
+        (
+            r#"{"jsonrpc":"2.0","id":1,"method":"hello"} {"jsonrpc":"2.0","id":2,"method":"hello"}"#,
+            -32700,
+        ),
+        ("null", -32600),
+    ] {
+        client.send(text.to_owned()).await.unwrap();
+        let reply = timeout_at(Instant::now() + REQUEST_TIMEOUT, client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            json::from_str::<json::Value>(&reply).unwrap(),
+            json::json!({
+                "jsonrpc": "2.0", "id": null,
+                "error": {"code": code, "message": if code == -32600 { "Invalid Request" } else { "Parse error" }},
+            })
+        );
+    }
+    client
+        .send(r#"{"jsonrpc":"2.0","id":3,"method":"hello"}"#.to_owned())
+        .await
+        .unwrap();
+    client.get_mut().shutdown().await.unwrap();
+    let reply = timeout_at(Instant::now() + REQUEST_TIMEOUT, client.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let reply: json::Value = json::from_str(&reply).unwrap();
+    assert_eq!(reply["id"], 3);
+    assert_eq!(reply["result"]["ready"], true);
     assert!(
         timeout_at(Instant::now() + REQUEST_TIMEOUT, client.next())
             .await

@@ -12,14 +12,14 @@ use tokio_util::codec::Framed;
 
 use super::*;
 
-fn response(value: json::Value) -> RpcFrame {
-    RpcFrame::Single(RpcMessage::success(1, value))
+fn response(value: json::Value) -> RpcMessage {
+    RpcMessage::success(1, value)
 }
 
 fn rejected(text: &str, error: ProtocolError) {
     assert!(
         matches!(JsonRpcCodec::default().parse(text).unwrap(),
-        RpcFrame::Single(RpcMessage::Invalid(e)) if e == error),
+        RpcMessage::Invalid(e) if e == error),
         "{text}"
     );
 }
@@ -31,13 +31,13 @@ fn wire_kinds_and_null_are_distinct() {
         codec
             .parse(r#"{"jsonrpc":"2.0","method":"hello"}"#)
             .unwrap(),
-        RpcFrame::Single(RpcMessage::Notification(_))
+        RpcMessage::Notification(_)
     ));
     assert!(
         matches!(codec.parse(r#"{"jsonrpc":"2.0","method":"hello","id":null}"#).unwrap(),
-        RpcFrame::Single(RpcMessage::Request(request)) if request.id == RpcId::Null)
+        RpcMessage::Request(request) if request.id == RpcId::Null)
     );
-    let RpcFrame::Single(RpcMessage::Response(reply)) = codec
+    let RpcMessage::Response(reply) = codec
         .parse(r#"{"jsonrpc":"2.0","id":null,"result":null}"#)
         .unwrap()
     else {
@@ -83,7 +83,7 @@ fn strict_envelopes_reject_versions_duplicates_unknown_fields_and_bad_params() {
 
 #[test]
 fn payloads_use_values_with_last_duplicate_key_winning() {
-    let RpcFrame::Single(RpcMessage::Request(request)) = JsonRpcCodec::default()
+    let RpcMessage::Request(request) = JsonRpcCodec::default()
         .parse(r#"{"jsonrpc":"2.0","method":"hello","id":1,"params":{"path":"a","path":"b"}}"#)
         .unwrap()
     else {
@@ -93,26 +93,18 @@ fn payloads_use_values_with_last_duplicate_key_winning() {
 }
 
 #[test]
-fn batch_limits_and_invalid_members_are_preserved() {
-    let codec = JsonRpcCodec::default();
-    let RpcFrame::Batch(messages) = codec.parse(
-        r#"[{"jsonrpc":"2.0","method":"hello"},{"jsonrpc":"2.0","id":null,"method":"hello"},17]"#
-    ).unwrap() else { panic!("expected batch"); };
-    assert_eq!(messages.len(), 3);
-    assert!(matches!(
-        &messages[2],
-        RpcMessage::Invalid(ProtocolError::InvalidRequest)
-    ));
-    let call = r#"{"jsonrpc":"2.0","method":"hello","id":1}"#;
-    assert!(matches!(
-        codec
-            .parse(&format!("[{}]", vec![call; 32].join(",")))
-            .unwrap(),
-        RpcFrame::Batch(_)
-    ));
+fn top_level_arrays_and_multiple_messages_are_rejected() {
+    for text in [
+        "[]",
+        r#"[{"jsonrpc":"2.0","method":"hello","id":1}]"#,
+        r#"[{"jsonrpc":"2.0","method":"hello"}]"#,
+        r#"[17,{"jsonrpc":"2.0","method":"hello","id":1}]"#,
+    ] {
+        rejected(text, ProtocolError::InvalidRequest);
+    }
     rejected(
-        &format!("[{}]", vec![call; 33].join(",")),
-        ProtocolError::InvalidRequest,
+        r#"{"jsonrpc":"2.0","method":"hello","id":1} {"jsonrpc":"2.0","method":"hello","id":2}"#,
+        ProtocolError::Parse,
     );
 }
 
@@ -123,7 +115,7 @@ fn string_id_limit_counts_utf8_bytes() {
         JsonRpcCodec::default()
             .parse(&text(&"é".repeat(64)))
             .unwrap(),
-        RpcFrame::Single(RpcMessage::Request(_))
+        RpcMessage::Request(_)
     ));
     rejected(
         &text(&format!("{}x", "é".repeat(64))),
@@ -140,7 +132,7 @@ fn typed_encoding_round_trips_every_wire_kind() {
         r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}"#,
         r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"bad","data":{"detail":1}}}"#,
         r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"bad","data":null}}"#,
-        r#"[{"jsonrpc":"2.0","method":"hello","id":1},{"jsonrpc":"2.0","method":"event","params":{}}]"#,
+        r#"{"jsonrpc":"2.0","id":1,"result":[1,2,3]}"#,
     ] {
         let mut codec = JsonRpcCodec::default();
         let mut bytes = BytesMut::new();
@@ -161,7 +153,6 @@ fn outgoing_limits_and_invalid_frames_do_not_modify_destination() {
     let text = json::to_string(&response(json::Value::String("x".repeat(40)))).unwrap();
     let mut codec = JsonRpcCodec::new(Limits {
         max_frame_bytes: text.len(),
-        ..Limits::default()
     });
     let mut bytes = BytesMut::new();
     codec
@@ -175,8 +166,8 @@ fn outgoing_limits_and_invalid_frames_do_not_modify_destination() {
     ));
     assert_eq!(bytes, before);
     for frame in [
-        RpcFrame::Batch(vec![]),
-        RpcFrame::Single(RpcMessage::Invalid(ProtocolError::Parse)),
+        RpcMessage::Invalid(ProtocolError::Parse),
+        RpcMessage::Invalid(ProtocolError::InvalidRequest),
     ] {
         assert!(matches!(
             codec.encode(frame, &mut bytes),
@@ -216,8 +207,7 @@ fn escaped_newlines_cannot_inject_a_frame() {
         .unwrap();
     assert_eq!(bytes.iter().filter(|byte| **byte == b'\n').count(), 1);
     assert!(!bytes.contains(&b'\r'));
-    let RpcFrame::Single(RpcMessage::Response(reply)) = codec.decode(&mut bytes).unwrap().unwrap()
-    else {
+    let RpcMessage::Response(reply) = codec.decode(&mut bytes).unwrap().unwrap() else {
         panic!("expected response");
     };
     assert!(matches!(reply, RpcResponse::Success { result: value, .. } if value == "a\r\nb"));
@@ -250,10 +240,7 @@ async fn exact_limits_include_cr_and_final_eof() {
             .unwrap()
             .unwrap();
         if accepted {
-            assert!(matches!(
-                result.unwrap(),
-                RpcFrame::Single(RpcMessage::Notification(_))
-            ));
+            assert!(matches!(result.unwrap(), RpcMessage::Notification(_)));
         } else {
             assert!(matches!(result, Err(TransportError::TooLarge)));
         }
@@ -272,18 +259,18 @@ fn fragmented_coalesced_and_final_eof_frames_decode() {
     );
     assert!(matches!(
         codec.decode(&mut bytes).unwrap(),
-        Some(RpcFrame::Single(RpcMessage::Notification(_)))
+        Some(RpcMessage::Notification(_))
     ));
     assert!(codec.decode(&mut bytes).unwrap().is_none());
     assert!(matches!(
         codec.decode_eof(&mut bytes).unwrap(),
-        Some(RpcFrame::Single(RpcMessage::Response(_)))
+        Some(RpcMessage::Response(_))
     ));
     assert!(codec.decode_eof(&mut bytes).unwrap().is_none());
     let mut bad = BytesMut::from(&b"{\"jsonrpc\":"[..]);
     assert!(matches!(
         codec.decode_eof(&mut bad).unwrap(),
-        Some(RpcFrame::Single(RpcMessage::Invalid(ProtocolError::Parse)))
+        Some(RpcMessage::Invalid(ProtocolError::Parse))
     ));
 }
 
@@ -331,34 +318,14 @@ fn excessive_depth_and_invalid_outgoing_payloads_are_rejected() {
     let mut codec = JsonRpcCodec::default();
     let mut bytes = BytesMut::from(&b"existing"[..]);
     let before = bytes.clone();
-    let frame = RpcFrame::Single(RpcMessage::Request(RpcRequest {
+    let frame = RpcMessage::Request(RpcRequest {
         jsonrpc: RpcVersion::V2,
         id: RpcId::Number(1),
         method: "hello".into(),
         params: Some(json::Value::Null),
-    }));
+    });
     assert!(matches!(
         codec.encode(frame, &mut bytes),
-        Err(TransportError::InvalidFrame)
-    ));
-    assert_eq!(bytes, before);
-    let RpcFrame::Batch(messages) = codec
-        .parse(&format!(
-            "[{}]",
-            vec![r#"{"jsonrpc":"2.0","id":1,"method":"hello"}"#; 32].join(",")
-        ))
-        .unwrap()
-    else {
-        panic!("expected batch");
-    };
-    let mut messages = messages;
-    messages.push(RpcMessage::Notification(RpcNotification {
-        jsonrpc: RpcVersion::V2,
-        method: "event".into(),
-        params: None,
-    }));
-    assert!(matches!(
-        codec.encode(RpcFrame::Batch(messages), &mut bytes),
         Err(TransportError::InvalidFrame)
     ));
     assert_eq!(bytes, before);

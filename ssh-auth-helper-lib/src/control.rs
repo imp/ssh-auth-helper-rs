@@ -10,10 +10,8 @@ use tokio_util::codec::Framed;
 use uuid::Uuid;
 
 use jsonrpc_uds::JsonRpcCodec;
-use jsonrpc_uds::Limits;
 use jsonrpc_uds::ProtocolError;
 use jsonrpc_uds::RpcError;
-use jsonrpc_uds::RpcFrame;
 use jsonrpc_uds::RpcId;
 use jsonrpc_uds::RpcMessage;
 use jsonrpc_uds::TransportError;
@@ -95,13 +93,11 @@ async fn query_hello(
 ) -> Result<HelloResponse, ControlError> {
     let mut wire = Framed::new(stream, JsonRpcCodec::default());
     let id = RpcId::String(Uuid::new_v4().to_string());
-    let frame = RpcFrame::request(&id, HELLO_METHOD, None);
-    timeout_at(deadline, wire.send(frame)).await??;
+    let message = RpcMessage::request(&id, HELLO_METHOD, None);
+    timeout_at(deadline, wire.send(message)).await??;
     timeout_at(deadline, wire.next())
         .await?
         .ok_or(ControlError::InvalidReply)??
-        .into_single()
-        .ok_or(ControlError::InvalidReply)?
         .into_result()
         .and_then(|(reply_id, result)| (reply_id == id).then_some(result))
         .ok_or(ControlError::InvalidReply)?
@@ -133,60 +129,28 @@ fn execute(message: RpcMessage, hello: &HelloResponse) -> Result<Option<RpcMessa
     Ok(id.map(|id| RpcMessage::from_result(id, result)))
 }
 
-// This application-local function keeps batch policy out of the codec. The
-// callback also lets fixtures verify execution counts without a server framework.
 fn dispatch(
-    frame: RpcFrame,
-    codec: &JsonRpcCodec,
+    message: RpcMessage,
+    hello: &HelloResponse,
     deadline: Instant,
-    limit: usize,
-    mut execute: impl FnMut(RpcMessage) -> Result<Option<RpcMessage>, ControlError>,
-) -> Result<Option<RpcFrame>, ControlError> {
-    let (messages, batch) = match frame {
-        RpcFrame::Single(message) => (vec![message], false),
-        RpcFrame::Batch(messages) => (messages, true),
-    };
-    let mut replies = Vec::new();
-    let mut bytes: usize = if batch { 2 } else { 0 }; // brackets
-    for message in messages {
-        if Instant::now() >= deadline {
-            Err(ControlError::Timeout)?;
-        }
-        if let Some(reply) = execute(message)? {
-            let length = codec.encoded_len(&reply)?;
-            bytes = bytes
-                .saturating_add(length)
-                .saturating_add(usize::from(batch && !replies.is_empty()));
-            if bytes > limit {
-                Err(TransportError::TooLarge)?;
-            }
-            replies.push(reply);
-        }
-        if Instant::now() >= deadline {
-            Err(ControlError::Timeout)?;
-        }
+) -> Result<Option<RpcMessage>, ControlError> {
+    if Instant::now() >= deadline {
+        return Err(ControlError::Timeout);
     }
-    if batch {
-        Ok((!replies.is_empty()).then_some(RpcFrame::Batch(replies)))
-    } else {
-        Ok(replies.pop().map(RpcFrame::Single))
+    let reply = execute(message, hello)?;
+    if Instant::now() >= deadline {
+        return Err(ControlError::Timeout);
     }
+    Ok(reply)
 }
 
 pub(crate) async fn handle(
     stream: net::UnixStream,
     hello: &HelloResponse,
 ) -> Result<(), ControlError> {
-    let limits = Limits::default();
-    let mut wire = Framed::new(stream, JsonRpcCodec::new(limits));
-    while let Some(frame) = timeout_at(Instant::now() + REQUEST_TIMEOUT, wire.next()).await? {
-        let reply = dispatch(
-            frame?,
-            wire.codec(),
-            Instant::now() + REQUEST_TIMEOUT,
-            limits.max_frame_bytes,
-            |message| execute(message, hello),
-        )?;
+    let mut wire = Framed::new(stream, JsonRpcCodec::default());
+    while let Some(message) = timeout_at(Instant::now() + REQUEST_TIMEOUT, wire.next()).await? {
+        let reply = dispatch(message?, hello, Instant::now() + REQUEST_TIMEOUT)?;
         if let Some(reply) = reply {
             timeout_at(Instant::now() + REQUEST_TIMEOUT, wire.send(reply)).await??;
         }

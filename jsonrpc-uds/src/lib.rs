@@ -1,7 +1,8 @@
 //! Typed, bounded JSON-RPC frames over caller-authorized I/O.
 //!
 //! Use `Framed::new(stream, JsonRpcCodec::default())` as a stream/sink of
-//! `RpcFrame`. The caller owns authorization, dispatch, correlation and deadlines.
+//! `RpcMessage`. Each line contains one message; batches are unsupported.
+//! The caller owns authorization, dispatch, correlation and deadlines.
 
 use std::io;
 
@@ -12,7 +13,6 @@ pub use codec::Limits;
 pub use codec::TransportError;
 pub use frame::ProtocolError;
 pub use frame::RpcError;
-pub use frame::RpcFrame;
 pub use frame::RpcId;
 pub use frame::RpcMessage;
 pub use frame::RpcNotification;
@@ -24,5 +24,4 @@ mod codec;
 mod frame;
 
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
-pub const MAX_BATCH_MEMBERS: usize = 32;
 pub const MAX_ID_BYTES: usize = 128;

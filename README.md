@@ -73,11 +73,16 @@ envelopes receive Invalid Request (-32600); invalid method params receive
 Invalid params (-32602). Duplicate envelope fields are rejected. Method payloads
 use ordinary JSON values; duplicate keys inside params/results keep the last
 value. Output is serialized into a fixed-capacity buffer before it is queued,
-and string newlines are escaped. Empty batches or batches above 32 members are
-rejected before execution. Mixed batches omit notification replies, and
-all-notification batches emit no frame. Aggregate replies obey the same
-64 KiB limit; overflow closes the stream after potentially executed operations.
-Batches are not atomic. Clients never automatically replay uncertain operations. Startup/readiness checks share a five-second budget.
+and string newlines are escaped. This control protocol uses a restricted
+JSON-RPC profile: each line contains exactly one message object. Top-level
+arrays, including batches, receive one Invalid Request (-32600) response with
+null ID, without executing any member. Multiple JSON values on one line receive
+Parse error (-32700). Arrays inside params/results are allowed. A connection
+can carry successive individual messages; invalid input does not prevent a
+later valid call unless a framing error closes the stream. Outgoing replies obey
+the same 64 KiB limit; overflow closes the stream without sending a partial frame.
+Clients never automatically replay uncertain operations. Startup/readiness
+checks share a five-second budget.
 
 Use stable Rust, selected by `rust-toolchain.toml`:
 
@@ -98,8 +103,8 @@ The Cargo workspace has four peer packages, all inheriting shared Rust/Clippy li
 - `ssh-auth-helper-api`: our helper's management API schemas, including
   `HelloRequest`/`HelloResponse`. Operation payloads use `XxxRequest`/`XxxResponse`.
 - `jsonrpc-uds`: bounded JSON-RPC parsing and serialization with typed
-  frames through `Framed<_, JsonRpcCodec>`. Requests, notifications, responses
-  and batches are typed; params/results use `serde_json::Value`. The core library
+  messages through `Framed<_, JsonRpcCodec>`. Requests, notifications and responses
+  are typed; params/results use `serde_json::Value`. The core library
   owns dispatch, deadlines and readiness calls over the typed stream. Callers
   authorize endpoints and peers before constructing the framed stream.
 

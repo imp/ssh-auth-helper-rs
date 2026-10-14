@@ -13,19 +13,17 @@ use super::*;
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     pub max_frame_bytes: usize,
-    pub max_batch_members: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Self {
             max_frame_bytes: MAX_FRAME_BYTES,
-            max_batch_members: MAX_BATCH_MEMBERS,
         }
     }
 }
 
-/// Decode/encode JSON-RPC messages using the same byte and batch bounds.
+/// Decode/encode one JSON-RPC message per line using the same byte bound.
 ///
 /// Protocol rejections are yielded as `RpcMessage::Invalid` so a server can
 /// reply. Framing errors are fatal: discard the connection. LF/CRLF and final
@@ -52,29 +50,17 @@ impl JsonRpcCodec {
     ///
     /// # Errors
     /// Rejects over-limit text; protocol failures are retained in the returned frame.
-    pub fn parse(&self, text: &str) -> Result<RpcFrame, TransportError> {
+    pub fn parse(&self, text: &str) -> Result<RpcMessage, TransportError> {
         if text.len() <= self.limits.max_frame_bytes {
-            Ok(frame::parse(text, self.limits.max_batch_members))
+            Ok(frame::parse(text))
         } else {
             Err(TransportError::TooLarge)
-        }
-    }
-
-    /// Measure a single outgoing message for incremental aggregate reply budgeting.
-    ///
-    /// # Errors
-    /// Rejects invalid messages and over-limit serialization.
-    pub fn encoded_len(&self, message: &RpcMessage) -> Result<usize, TransportError> {
-        if message.is_valid() {
-            Ok(serialize(message, self.limits.max_frame_bytes)?.len())
-        } else {
-            Err(TransportError::InvalidFrame)
         }
     }
 }
 
 impl Decoder for JsonRpcCodec {
-    type Item = RpcFrame;
+    type Item = RpcMessage;
     type Error = TransportError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -92,12 +78,12 @@ impl Decoder for JsonRpcCodec {
     }
 }
 
-impl Encoder<RpcFrame> for JsonRpcCodec {
+impl Encoder<RpcMessage> for JsonRpcCodec {
     type Error = TransportError;
 
-    fn encode(&mut self, frame: RpcFrame, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        if frame.is_valid(self.limits.max_batch_members) {
-            let bytes = serialize(&frame, self.limits.max_frame_bytes)?;
+    fn encode(&mut self, message: RpcMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        if message.is_valid() {
+            let bytes = serialize(&message, self.limits.max_frame_bytes)?;
             dst.reserve(bytes.len() + 1);
             dst.extend_from_slice(&bytes);
             dst.extend_from_slice(b"\n");

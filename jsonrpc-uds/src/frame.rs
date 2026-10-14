@@ -187,42 +187,7 @@ impl RpcResponse {
     }
 }
 
-/// One message or a batch. Rejected input is retained for standard error replies.
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-pub enum RpcFrame {
-    Single(RpcMessage),
-    Batch(Vec<RpcMessage>),
-}
-
-impl RpcFrame {
-    pub fn request(
-        id: &RpcId,
-        method: impl Into<String>,
-        params: impl Into<Option<json::Value>>,
-    ) -> Self {
-        Self::Single(RpcMessage::request(id, method, params))
-    }
-
-    pub fn is_valid(&self, max_batch_members: usize) -> bool {
-        match self {
-            Self::Single(message) => message.is_valid(),
-            Self::Batch(messages) => {
-                !messages.is_empty()
-                    && messages.len() <= max_batch_members
-                    && messages.iter().all(|message| message.is_valid())
-            }
-        }
-    }
-
-    pub fn into_single(self) -> Option<RpcMessage> {
-        match self {
-            RpcFrame::Single(message) => Some(message),
-            _ => None,
-        }
-    }
-}
-
+/// One RPC message. Rejected input is retained for standard error replies.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum RpcMessage {
@@ -331,7 +296,7 @@ fn optional_value<'de, D: Deserializer<'de>>(d: D) -> Result<Option<json::Value>
 }
 
 // Untagged parsing retains duplicate envelope fields. Payload objects intentionally
-// follow Value's last-key-wins behavior; invalid members remain individually reportable.
+// follow Value's last-key-wins behavior; arrays and other non-message values are invalid.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum IncomingMessage {
@@ -355,25 +320,10 @@ impl From<IncomingMessage> for RpcMessage {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum IncomingFrame {
-    Batch(Vec<IncomingMessage>),
-    Single(IncomingMessage),
-}
-
-pub(crate) fn parse(text: &str, max_batch_members: usize) -> RpcFrame {
-    match json::from_str::<IncomingFrame>(text) {
-        Ok(IncomingFrame::Single(message)) => RpcFrame::Single(message.into()),
-        Ok(IncomingFrame::Batch(messages))
-            if !messages.is_empty() && messages.len() <= max_batch_members =>
-        {
-            RpcFrame::Batch(messages.into_iter().map(Into::into).collect())
-        }
-        Ok(IncomingFrame::Batch(_)) => {
-            RpcFrame::Single(RpcMessage::Invalid(ProtocolError::InvalidRequest))
-        }
-        Err(_) => RpcFrame::Single(RpcMessage::Invalid(ProtocolError::Parse)),
+pub(crate) fn parse(text: &str) -> RpcMessage {
+    match json::from_str::<IncomingMessage>(text) {
+        Ok(message) => message.into(),
+        Err(_) => RpcMessage::Invalid(ProtocolError::Parse),
     }
 }
 
