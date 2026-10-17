@@ -23,7 +23,13 @@ pub use registration::UNREGISTER_METHOD;
 pub use registration::UnregisterRequest;
 pub use registration::UnregisterResponse;
 
+mod forwarding;
 mod registration;
+
+pub use forwarding::ForwardingBounds;
+pub use forwarding::ProbeFailure;
+pub use forwarding::RelayFailure;
+pub use forwarding::SetupFailure;
 
 /// Helper capability version, independent of the JSON-RPC envelope version.
 pub const PROTOCOL_VERSION: u32 = 1;

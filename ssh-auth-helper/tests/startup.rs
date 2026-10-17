@@ -16,6 +16,7 @@ use std::time::Duration;
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use serde_json as json;
+use ssh_auth_helper_lib::api;
 use ssh_auth_helper_lib::control;
 use ssh_auth_helper_lib::runtime::RuntimeDirectory;
 use ssh_auth_helper_lib::runtime::RuntimeError;
@@ -23,6 +24,7 @@ use ssh_auth_helper_lib::runtime::RuntimeLock;
 use ssh_auth_helper_lib::runtime::RuntimePaths;
 use ssh_auth_helper_lib::runtime::RuntimeSockets;
 use tokio::net;
+use tokio::task;
 use tokio::time::Instant;
 
 fn fixture() -> (tempfile::TempDir, RuntimePaths) {
@@ -53,7 +55,7 @@ impl Server {
         )
     }
 
-    async fn ready(&mut self, paths: &RuntimePaths) -> control::HelloResponse {
+    async fn ready(&mut self, paths: &RuntimePaths) -> api::HelloResponse {
         let result = control::wait_ready(paths, Instant::now() + Duration::from_secs(5)).await;
         if result.is_err() {
             let _ = self.0.kill();
@@ -162,7 +164,7 @@ async fn concurrent_processes_have_one_ready_owner() {
             if running.len() == 1 {
                 break running[0];
             }
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
     })
     .await

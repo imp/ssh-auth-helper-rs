@@ -1,24 +1,12 @@
 //! Bounded socket-identity registry. Registration does not probe connectivity.
 
 use std::collections::VecDeque;
-use std::fs;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::MetadataExt;
 
 use jiff::Timestamp;
 use parking_lot::Mutex;
-use ssh_auth_helper_api::Health;
-use ssh_auth_helper_api::MAX_LABEL_BYTES;
-use ssh_auth_helper_api::MAX_REGISTRATIONS;
-use ssh_auth_helper_api::MAX_RETIREMENTS;
-use ssh_auth_helper_api::RegisterRequest;
-use ssh_auth_helper_api::RegisterResponse;
-use ssh_auth_helper_api::Registration;
-use ssh_auth_helper_api::RegistrationId;
-use ssh_auth_helper_api::Retirement;
-use ssh_auth_helper_api::RetirementReason;
-use ssh_auth_helper_api::StatusResponse;
-use ssh_auth_helper_api::UnregisterResponse;
+use tokio::sync::Semaphore;
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -28,7 +16,7 @@ use super::*;
 const STATUS_BYTES: usize = control::MAX_FRAME_BYTES - 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SocketIdentity {
+pub(crate) struct SocketIdentity {
     device: u64,
     inode: u64,
 }
@@ -52,20 +40,20 @@ impl SocketIdentity {
 
 #[derive(Debug)]
 struct ValidatedSocket {
-    request: RegisterRequest,
+    request: api::RegisterRequest,
     resolved: Utf8PathBuf,
     identity: SocketIdentity,
 }
 
 impl ValidatedSocket {
     fn new(
-        request: RegisterRequest,
+        request: api::RegisterRequest,
         endpoints: &[SocketIdentity; 2],
     ) -> Result<Self, RegistryError> {
         if request
             .label
             .as_ref()
-            .is_some_and(|label| label.len() > MAX_LABEL_BYTES)
+            .is_some_and(|label| label.len() > api::MAX_LABEL_BYTES)
         {
             return Err(RegistryError::LabelTooLong);
         }
@@ -90,14 +78,25 @@ impl ValidatedSocket {
 
 #[derive(Clone, Debug)]
 struct Candidate {
-    registration: Registration,
+    registration: api::Registration,
     resolved: Utf8PathBuf,
     identity: SocketIdentity,
+    gate: Arc<Semaphore>,
+    retry_at: Option<Instant>,
+    failures: u32,
 }
 
 impl Candidate {
-    fn retire(self, reason: RetirementReason) -> Retirement {
-        Retirement {
+    fn view(&self, now: Instant) -> api::Registration {
+        let mut registration = self.registration.clone();
+        registration.retry_after_ms = self
+            .retry_at
+            .map(|at| forwarding::millis(at.saturating_duration_since(now)));
+        registration
+    }
+
+    fn retire(self, reason: api::RetirementReason) -> api::Retirement {
+        api::Retirement {
             registration: self.registration,
             retired_at: jiff::Timestamp::now(),
             reason,
@@ -107,15 +106,24 @@ impl Candidate {
 #[derive(Clone, Debug, Default)]
 struct Registry {
     candidates: Vec<Candidate>,
-    retirements: VecDeque<Retirement>,
+    retirements: VecDeque<api::Retirement>,
+    active: Option<api::RegistrationId>,
+    generation: u64,
+    active_relays: usize,
+    last_setup_failure: Option<api::SetupFailure>,
+    last_relay_error: Option<api::RelayFailure>,
 }
 
 impl Registry {
-    fn retire(&mut self, index: usize, reason: RetirementReason) {
+    fn retire(&mut self, index: usize, reason: api::RetirementReason) {
         let candidate = self.candidates.remove(index);
+        if self.active.as_ref() == Some(&candidate.registration.id) {
+            self.active = None;
+        }
+        self.generation = self.generation.wrapping_add(1);
         let retirement = candidate.retire(reason);
         self.retirements.push_back(retirement);
-        while self.retirements.len() > MAX_RETIREMENTS {
+        while self.retirements.len() > api::MAX_RETIREMENTS {
             self.retirements.pop_front();
         }
     }
@@ -123,9 +131,10 @@ impl Registry {
     fn register(
         &mut self,
         socket: ValidatedSocket,
-        hello: &control::HelloResponse,
+        hello: &api::HelloResponse,
+        config: &ForwardingConfig,
         deadline: Instant,
-    ) -> Result<RegisterResponse, RegistryError> {
+    ) -> Result<api::RegisterResponse, RegistryError> {
         if Instant::now() >= deadline {
             return Err(RegistryError::Deadline);
         }
@@ -137,7 +146,7 @@ impl Registry {
                 && (candidate.registration.socket == socket.request.socket
                     || candidate.resolved == socket.resolved)
             {
-                next.retire(index, RetirementReason::Replaced);
+                next.retire(index, api::RetirementReason::Replaced);
             }
         }
         let registration = if let Some(candidate) = next
@@ -145,41 +154,49 @@ impl Registry {
             .iter()
             .find(|candidate| candidate.identity == socket.identity)
         {
-            candidate.registration.clone()
+            candidate.view(Instant::now())
         } else {
-            if next.candidates.len() >= MAX_REGISTRATIONS {
+            if next.candidates.len() >= api::MAX_REGISTRATIONS {
                 return Err(RegistryError::Capacity);
             }
-            let registration = Registration {
-                id: RegistrationId::new(hello.instance, Uuid::new_v4())
+            let registration = api::Registration {
+                id: api::RegistrationId::new(hello.instance, Uuid::new_v4())
                     .map_err(|_| RegistryError::InvalidInstance)?,
                 socket: socket.request.socket,
                 label: socket.request.label,
                 registered_at: Timestamp::now(),
-                health: Health::Unobserved,
+                health: api::Health::Unobserved,
                 observed_at: None,
+                last_failure: None,
+                retry_after_ms: None,
+                active_relays: 0,
             };
             next.candidates.push(Candidate {
                 registration: registration.clone(),
                 resolved: socket.resolved,
                 identity: socket.identity,
+                gate: Arc::new(Semaphore::new(1)),
+                retry_at: None,
+                failures: 0,
             });
+            next.generation = next.generation.wrapping_add(1);
             registration
         };
-        next.trim_history(hello)?;
+        next.trim_history(hello, config)?;
         if Instant::now() >= deadline {
             return Err(RegistryError::Deadline);
         }
         *self = next;
-        Ok(RegisterResponse { registration })
+        Ok(api::RegisterResponse { registration })
     }
 
     fn unregister(
         &mut self,
-        id: &RegistrationId,
-        hello: &control::HelloResponse,
+        id: &api::RegistrationId,
+        hello: &api::HelloResponse,
+        config: &ForwardingConfig,
         deadline: Instant,
-    ) -> Result<UnregisterResponse, RegistryError> {
+    ) -> Result<api::UnregisterResponse, RegistryError> {
         if Instant::now() >= deadline {
             return Err(RegistryError::Deadline);
         }
@@ -190,39 +207,63 @@ impl Registry {
                 .position(|candidate| candidate.registration.id == *id)
         {
             let mut next = self.clone();
-            next.retire(index, RetirementReason::Unregistered);
-            next.trim_history(hello)?;
+            next.retire(index, api::RetirementReason::Unregistered);
+            next.trim_history(hello, config)?;
             if Instant::now() >= deadline {
                 return Err(RegistryError::Deadline);
             }
             *self = next;
         }
-        Ok(UnregisterResponse {})
+        Ok(api::UnregisterResponse {})
     }
 
-    fn status(&self, hello: &control::HelloResponse) -> StatusResponse {
-        StatusResponse {
+    fn status(&self, hello: &api::HelloResponse, config: &ForwardingConfig) -> api::StatusResponse {
+        api::StatusResponse {
             instance: hello.instance,
             endpoints: hello.endpoints.clone(),
             registrations: self
                 .candidates
                 .iter()
-                .map(|candidate| candidate.registration.clone())
+                .map(|candidate| candidate.view(Instant::now()))
                 .collect(),
             recent_retirements: self.retirements.iter().cloned().collect(),
-            capacity: MAX_REGISTRATIONS,
-            retirement_capacity: MAX_RETIREMENTS,
-            active: None,
-            active_relays: 0,
+            capacity: api::MAX_REGISTRATIONS,
+            retirement_capacity: api::MAX_RETIREMENTS,
+            active: self.active.clone(),
+            active_relays: self.active_relays,
+            bounds: config.bounds(),
+            last_setup_failure: self.last_setup_failure,
+            last_relay_error: self.last_relay_error.clone(),
         }
     }
 
-    fn fits(&self, hello: &control::HelloResponse) -> bool {
-        json::to_vec(&self.status(hello)).is_ok_and(|bytes| bytes.len() <= STATUS_BYTES)
+    fn fits(&self, hello: &api::HelloResponse, config: &ForwardingConfig) -> bool {
+        // Normalize mutable fields, then reserve their worst-case growth. Health/retry
+        // fields need less than 256 bytes per registration (fixed enums, timestamps,
+        // bounded integer counters). Global active/diagnostic growth needs <512 bytes.
+        let mut baseline = self.status(hello, config);
+        baseline.active = None;
+        baseline.active_relays = 0;
+        baseline.last_setup_failure = None;
+        baseline.last_relay_error = None;
+        for registration in &mut baseline.registrations {
+            registration.health = api::Health::Unobserved;
+            registration.observed_at = None;
+            registration.last_failure = None;
+            registration.retry_after_ms = None;
+            registration.active_relays = 0;
+        }
+        let reserve = self.candidates.len() * 256 + 512;
+        json::to_vec(&baseline)
+            .is_ok_and(|bytes| bytes.len().saturating_add(reserve) <= STATUS_BYTES)
     }
 
-    fn trim_history(&mut self, hello: &control::HelloResponse) -> Result<(), RegistryError> {
-        while !self.fits(hello) {
+    fn trim_history(
+        &mut self,
+        hello: &api::HelloResponse,
+        config: &ForwardingConfig,
+    ) -> Result<(), RegistryError> {
+        while !self.fits(hello, config) {
             if self.retirements.pop_front().is_none() {
                 return Err(RegistryError::Capacity);
             }
@@ -234,14 +275,15 @@ impl Registry {
 /// Daemon-owned state; locks cover only bounded in-memory work, never socket/filesystem I/O.
 #[derive(Debug)]
 pub(crate) struct State {
-    pub(crate) hello: control::HelloResponse,
+    pub(crate) hello: api::HelloResponse,
     endpoints: [SocketIdentity; 2],
     registry: Mutex<Registry>,
+    pub(crate) config: ForwardingConfig,
 }
 
 impl State {
     #[cfg(test)]
-    pub(crate) fn fixture(hello: control::HelloResponse) -> Self {
+    pub(crate) fn fixture(hello: api::HelloResponse) -> Self {
         Self {
             hello,
             endpoints: [SocketIdentity {
@@ -249,10 +291,15 @@ impl State {
                 inode: 0,
             }; 2],
             registry: Mutex::new(Registry::default()),
+            config: ForwardingConfig::default(),
         }
     }
 
-    pub(crate) fn new(hello: control::HelloResponse) -> Result<Self, RegistryError> {
+    pub(crate) fn new(
+        hello: api::HelloResponse,
+        config: ForwardingConfig,
+    ) -> Result<Self, RegistryError> {
+        config.validate()?;
         let endpoints = [
             SocketIdentity::read(&hello.endpoints.agent)?,
             SocketIdentity::read(&hello.endpoints.control)?,
@@ -261,33 +308,40 @@ impl State {
             hello,
             endpoints,
             registry: Mutex::new(Registry::default()),
+            config,
         })
     }
 
     pub(crate) fn register(
         &self,
-        request: RegisterRequest,
+        request: api::RegisterRequest,
         deadline: Instant,
-    ) -> Result<RegisterResponse, RegistryError> {
+    ) -> Result<api::RegisterResponse, RegistryError> {
         let socket = ValidatedSocket::new(request, &self.endpoints)?;
-        self.registry.lock().register(socket, &self.hello, deadline)
+        self.registry
+            .lock()
+            .register(socket, &self.hello, &self.config, deadline)
     }
 
     pub(crate) fn unregister(
         &self,
-        id: &RegistrationId,
+        id: &api::RegistrationId,
         deadline: Instant,
-    ) -> Result<UnregisterResponse, RegistryError> {
-        self.registry.lock().unregister(id, &self.hello, deadline)
+    ) -> Result<api::UnregisterResponse, RegistryError> {
+        self.registry
+            .lock()
+            .unregister(id, &self.hello, &self.config, deadline)
     }
 
-    pub(crate) fn status(&self) -> StatusResponse {
-        self.registry.lock().status(&self.hello)
+    pub(crate) fn status(&self) -> api::StatusResponse {
+        self.registry.lock().status(&self.hello, &self.config)
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
+    #[error(transparent)]
+    Config(#[from] forwarding::InvalidConfig),
     #[error("registry operation deadline exceeded")]
     Deadline,
     #[error("socket inspection failed: {0}")]
@@ -307,6 +361,7 @@ pub enum RegistryError {
 impl From<RegistryError> for jsonrpc_uds::RpcError {
     fn from(error: RegistryError) -> Self {
         let (code, message, kind) = match error {
+            RegistryError::Config(_) => (-32603, "Internal error", "invalid_config"),
             RegistryError::Deadline => (-32004, "Operation deadline exceeded", "deadline_exceeded"),
             RegistryError::Io(_) | RegistryError::UnsafeSocket => {
                 (-32001, "Unsafe upstream socket", "unsafe_path")
@@ -325,6 +380,10 @@ impl From<RegistryError> for jsonrpc_uds::RpcError {
         }
     }
 }
+
+mod selection;
+
+pub(crate) use selection::ProbeTicket;
 
 #[cfg(test)]
 mod tests;

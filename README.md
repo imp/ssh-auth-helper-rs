@@ -5,8 +5,8 @@ across remote SSH connections and long-lived tmux sessions.
 
 The current CLI provides path discovery and a foreground daemon with private
 sockets, singleton locking, bounded control readiness, crash recovery,
-identity-checked cleanup and socket registration/status. Agent probing,
-selection, forwarding and automatic detached startup are not implemented yet.
+identity-checked cleanup, socket registration/status, sticky upstream selection
+and transparent agent forwarding. Automatic detached startup is not implemented yet.
 
 ```sh
 cargo run -p ssh-auth-helper --locked -- socket-path
@@ -58,8 +58,8 @@ with socket.socket(socket.AF_UNIX) as client:
 
 The reply contains the daemon instance UUID, `ready`, and both endpoint paths.
 Readiness means listeners/handlers are initialized, not that a forwarded agent
-is available. Agent clients currently close immediately without a fabricated
-reply. The control socket supports `hello`, `register`, `unregister` and `status`;
+is available. Agent clients close without a fabricated reply when no upstream
+can be selected within the setup budget. The control socket supports `hello`, `register`, `unregister` and `status`;
 other operations return JSON-RPC `Method not found` (-32601). Envelopes require exactly
 `jsonrpc: "2.0"`; responses contain one result or error and echo the request ID.
 IDs may be nonempty strings of 1..128 UTF-8 bytes, unsigned integers or null.
@@ -113,8 +113,10 @@ records are trimmed first, and registration is rejected without mutation if
 the remaining snapshot would exceed the control-message budget. Socket
 validation and snapshot preparation must finish before the mutation deadline.
 Use local filesystem socket paths. Registration does not connect to an agent;
-health is `unobserved`, no observation time is claimed, and active selection and
-relay counts remain empty/zero until forwarding is implemented.
+new registrations have `unobserved` health until an agent client triggers a probe.
+Status then reports the last observed health/time, retry delay, active registration,
+relay counts, setup failure and neutral relay-error metadata. Admission reserves
+space for later health/counter growth so status remains within the frame limit.
 
 Application errors carry metadata-only `error.data.kind` values:
 
@@ -162,11 +164,58 @@ payloads. Readiness sends one identified request and checks its response under
 one absolute connect/send/receive budget. Every return closes that connection;
 there are no background client tasks or automatic request replays.
 
-Detached startup, selection, watch and agent relay implementations follow next.
+To use the proxy while that foreground daemon remains running:
+
+```sh
+# Register each SSH session's original socket before switching to the stable path.
+ssh-auth-helper --runtime-dir /tmp/my-helper register --socket "$SSH_AUTH_SOCK"
+export SSH_AUTH_SOCK="$(ssh-auth-helper --runtime-dir /tmp/my-helper socket-path)"
+ssh-add -l
+```
+
+Each new client sends a bounded identities probe on a fresh upstream connection.
+A structurally valid empty identities reply is healthy. The selected upstream
+stays active while healthy; a brief registration of another agent does not
+preempt it. Failed probes allow fallback in registration order. Transient failures
+use exponential backoff; missing, replaced or unsafe socket objects retire the
+registration. A recovered older agent does not preempt the current healthy one.
+Availability does not guarantee a particular key or signing permission: different
+laptops may hold different identities, and signing can still require confirmation.
+
+The relay uses the exact successfully probed stream, preserving per-connection
+agent state. After the probe, bytes pass unchanged in both directions, including
+extensions. Existing clients remain pinned when registrations change. An uncertain
+signing request is never replayed on another agent. There is no short signing or
+idle timeout; bidirectional copy propagates half-closes and applies backpressure.
+An unattributed relay I/O error is diagnostic metadata, not proof that an upstream
+is dead. The next client probes again. This transparency does not itself establish
+compatibility with every agent extension or destination-constraint policy.
+
+Default forwarding bounds (also returned by `status --json`):
+
+| Bound | Default |
+| --- | --- |
+| Per-upstream connect/probe | 750 ms |
+| Total setup, including probe-queue waiting | 3 s |
+| Retry backoff | 1 s, doubling to 30 s |
+| Identities reply body | 1 MiB |
+| Concurrent probes per registration | 1 |
+| Agent setup/relay clients | 128, independent of 32 control clients |
+| Relay buffer per direction | 64 KiB |
+
+The library's `ForwardingConfig` permits validated smaller limits for embedding;
+the CLI uses these defaults. Detached startup, explicit selection, watch/events
+and SSH/tmux hook examples remain pending.
 
 The selected foundation uses Camino paths, parking_lot for short shared-state
 locks, Jiff UTC timestamps, and Tokio for asynchronous I/O and monotonic
-deadlines. Forwarding and real SSH/tmux acceptance remain under development. No installation step alters personal configuration.
+deadlines. Live SSH/tmux acceptance remains pending. No installation step alters
+personal configuration. An opt-in OpenSSH smoke test creates only temporary keys
+and isolated foreground agents, exercises list/sign/sticky failover, and cleans up:
+
+```sh
+cargo test -p ssh-auth-helper --locked --test real_agent -- --ignored
+```
 
 Linux tests requiring real foreign ownership or peer UIDs are explicitly
 ignored in the ordinary test run. Run them only in an isolated root container

@@ -1,11 +1,11 @@
 use super::*;
 
 fn hello() -> State {
-    State::fixture(HelloResponse {
+    State::fixture(api::HelloResponse {
         instance: Uuid::new_v4(),
-        supported_versions: vec![PROTOCOL_VERSION],
+        supported_versions: vec![api::PROTOCOL_VERSION],
         ready: true,
-        endpoints: Endpoints {
+        endpoints: api::Endpoints {
             agent: "/tmp/agent".into(),
             control: "/tmp/control".into(),
         },
@@ -64,7 +64,7 @@ fn unsupported_batches_and_other_non_messages_return_one_error() {
 
 #[test]
 fn expired_dispatch_budget_prevents_execution() {
-    let message = RpcMessage::request(&RpcId::Number(1), HELLO_METHOD, None);
+    let message = RpcMessage::request(&RpcId::Number(1), api::HELLO_METHOD, None);
     let outcome = dispatch(message, &hello(), Instant::now());
     assert!(matches!(outcome, Err(ControlError::Timeout)));
 }
@@ -82,7 +82,11 @@ async fn notifications_are_silent_and_later_calls_still_work() {
         client.send(notification).await.unwrap();
     }
     client
-        .send(RpcMessage::request(&RpcId::Number(1), HELLO_METHOD, None))
+        .send(RpcMessage::request(
+            &RpcId::Number(1),
+            api::HELLO_METHOD,
+            None,
+        ))
         .await
         .unwrap();
     use tokio::io::AsyncWriteExt;

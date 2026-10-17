@@ -3,6 +3,7 @@
 use clap::Args;
 use clap::Subcommand;
 use serde_json as json;
+use ssh_auth_helper_lib::api;
 use ssh_auth_helper_lib::control;
 
 use super::*;
@@ -57,8 +58,7 @@ impl Cli {
                 }
             }
             Command::Unregister { id, json } => {
-                let response =
-                    control::unregister(&paths, control::UnregisterRequest { id }).await?;
+                let response = control::unregister(&paths, api::UnregisterRequest { id }).await?;
                 if json {
                     write_json(json::to_value(response)?)?;
                 }
@@ -75,15 +75,20 @@ impl Cli {
                         "Registered agents: {}",
                         response.registrations.len()
                     )?;
-                    writeln!(output, "Active agent: none")?;
+                    let active = response
+                        .active
+                        .as_ref()
+                        .map_or_else(|| "none".into(), ToString::to_string);
+                    writeln!(output, "Active agent: {active}")?;
+                    writeln!(output, "Active relays: {}", response.active_relays)?;
                     for registration in response.registrations {
                         let label = registration
                             .label
                             .map_or_else(|| "-".to_owned(), |label| format!("{label:?}"));
                         writeln!(
                             output,
-                            "{}  {}  unobserved  {}",
-                            registration.id, registration.socket, label
+                            "{}  {}  {}  {}",
+                            registration.id, registration.socket, registration.health, label
                         )?;
                     }
                     writeln!(
@@ -103,7 +108,7 @@ impl Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run in the foreground until SIGINT/SIGTERM (upstream forwarding is pending).
+    /// Run the proxy in the foreground until SIGINT/SIGTERM.
     Serve,
     /// Print the planned agent socket path without creating files or starting a daemon.
     SocketPath,
@@ -111,7 +116,7 @@ pub enum Command {
     Register(RegisterArgs),
     /// Remove a registration; repeated cleanup succeeds.
     Unregister {
-        id: control::RegistrationId,
+        id: api::RegistrationId,
         #[arg(long)]
         json: bool,
     },
@@ -136,12 +141,12 @@ pub struct RegisterArgs {
 }
 
 impl RegisterArgs {
-    fn into_request(self) -> Result<control::RegisterRequest, CliError> {
+    fn into_request(self) -> Result<api::RegisterRequest, CliError> {
         let socket = self.socket.ok_or(CliError::MissingSocket)?;
         let socket = camino::Utf8Path::from_os_str(&socket)
             .ok_or(CliError::NonUtf8Socket)?
             .to_owned();
-        Ok(control::RegisterRequest {
+        Ok(api::RegisterRequest {
             socket,
             label: self.label,
         })

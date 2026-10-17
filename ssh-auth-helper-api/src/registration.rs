@@ -83,11 +83,23 @@ pub struct RegisterRequest {
     pub label: Option<String>,
 }
 
-/// No connectivity probe has been performed in the registration increment.
+/// Last observed connectivity, not a promise of signing capability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Health {
     Unobserved,
+    Available,
+    TemporarilyUnavailable,
+}
+
+impl fmt::Display for Health {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Unobserved => "unobserved",
+            Self::Available => "available",
+            Self::TemporarilyUnavailable => "temporarily unavailable",
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +113,11 @@ pub struct Registration {
     pub health: Health,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_at: Option<Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<ProbeFailure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+    pub active_relays: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +145,8 @@ pub struct StatusRequest {}
 pub enum RetirementReason {
     Replaced,
     Unregistered,
+    Missing,
+    Unsafe,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +168,11 @@ pub struct StatusResponse {
     pub retirement_capacity: usize,
     pub active: Option<RegistrationId>,
     pub active_relays: usize,
+    pub bounds: ForwardingBounds,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_setup_failure: Option<SetupFailure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_relay_error: Option<RelayFailure>,
 }
 
 #[cfg(test)]

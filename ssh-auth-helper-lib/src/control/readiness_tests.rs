@@ -10,8 +10,15 @@ fn wire(stream: net::UnixStream) -> Framed<net::UnixStream, LinesCodec> {
 
 fn hello_result() -> json::Value {
     json::json!({
-        "instance": Uuid::new_v4(), "supported_versions": [PROTOCOL_VERSION], "ready": true,
-        "endpoints": {"agent": "/tmp/agent", "control": "/tmp/control"}
+        "instance": Uuid::new_v4(),
+        "supported_versions": [
+            api::PROTOCOL_VERSION
+        ],
+        "ready": true,
+        "endpoints": {
+            "agent": "/tmp/agent",
+            "control": "/tmp/control"
+        }
     })
 }
 
@@ -40,7 +47,7 @@ async fn direct_hello_uses_one_string_id_and_closes_after_success() {
         let mut peer = wire(server);
         let request = read_request(&mut peer).await;
         assert_eq!(request["jsonrpc"], "2.0");
-        assert_eq!(request["method"], HELLO_METHOD);
+        assert_eq!(request["method"], api::HELLO_METHOD);
         assert!(request["id"].is_string());
         assert!(request.get("params").is_none());
         peer.send(
@@ -57,7 +64,7 @@ async fn direct_hello_uses_one_string_id_and_closes_after_success() {
         .await
         .unwrap();
     assert!(hello.ready);
-    assert_eq!(hello.supported_versions, [PROTOCOL_VERSION]);
+    assert_eq!(hello.supported_versions, [api::PROTOCOL_VERSION]);
     fake.await.unwrap();
 }
 

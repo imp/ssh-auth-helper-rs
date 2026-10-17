@@ -1,6 +1,5 @@
 use std::os::unix::fs::symlink;
 use std::os::unix::net::UnixListener;
-use std::sync::Arc;
 
 use super::*;
 
@@ -19,7 +18,9 @@ impl Fixture {
         let paths = RuntimePaths::discover(Some(&base), None).unwrap();
         let agent = UnixListener::bind(paths.agent()).unwrap();
         let control = UnixListener::bind(paths.control()).unwrap();
-        let state = Arc::new(State::new(control::hello_response(&paths)).unwrap());
+        let state = Arc::new(
+            State::new(control::hello_response(&paths), ForwardingConfig::default()).unwrap(),
+        );
         Self {
             _directory: directory,
             _agent: agent,
@@ -29,19 +30,22 @@ impl Fixture {
         }
     }
 
-    fn register(&self, request: RegisterRequest) -> Result<RegisterResponse, RegistryError> {
+    fn register(
+        &self,
+        request: api::RegisterRequest,
+    ) -> Result<api::RegisterResponse, RegistryError> {
         self.state
             .register(request, Instant::now() + control::REQUEST_TIMEOUT)
     }
 
-    fn unregister(&self, id: &RegistrationId) -> UnregisterResponse {
+    fn unregister(&self, id: &api::RegistrationId) -> api::UnregisterResponse {
         self.state
             .unregister(id, Instant::now() + control::REQUEST_TIMEOUT)
             .unwrap()
     }
 
-    fn request(&self, name: &str) -> RegisterRequest {
-        RegisterRequest {
+    fn request(&self, name: &str) -> api::RegisterRequest {
+        api::RegisterRequest {
             socket: self.base.join(name),
             label: None,
         }
@@ -63,7 +67,7 @@ fn silent_sockets_and_aliases_deduplicate_without_changing_order_or_metadata() {
     symlink(&a.socket, &alias.socket).unwrap();
     let duplicate = fixture.register(alias).unwrap().registration;
     assert_eq!(first, duplicate);
-    assert_eq!(first.health, Health::Unobserved);
+    assert_eq!(first.health, api::Health::Unobserved);
     assert!(first.observed_at.is_none());
     assert_eq!(fixture.state.status().registrations[0], first);
     assert_eq!(fixture.state.status().registrations.len(), 2);
@@ -83,13 +87,13 @@ fn replacement_retires_old_id_and_late_or_foreign_cleanup_preserves_new_socket()
     assert_ne!(old.id, new.id);
     fixture.unregister(&old.id);
     fixture.unregister(&old.id);
-    fixture.unregister(&RegistrationId::new(Uuid::new_v4(), Uuid::new_v4()).unwrap());
+    fixture.unregister(&api::RegistrationId::new(Uuid::new_v4(), Uuid::new_v4()).unwrap());
     let status = fixture.state.status();
     assert_eq!(status.registrations.as_slice(), std::slice::from_ref(&new));
     assert_eq!(status.recent_retirements[0].registration, old);
     assert_eq!(
         status.recent_retirements[0].reason,
-        RetirementReason::Replaced
+        api::RetirementReason::Replaced
     );
     fixture.unregister(&new.id);
     fixture.unregister(&new.id);
@@ -98,7 +102,7 @@ fn replacement_retires_old_id_and_late_or_foreign_cleanup_preserves_new_socket()
     assert_eq!(status.recent_retirements.len(), 2);
     assert_eq!(
         status.recent_retirements[1].reason,
-        RetirementReason::Unregistered
+        api::RetirementReason::Unregistered
     );
 }
 
@@ -126,7 +130,7 @@ fn helper_paths_symlinks_and_hardlinks_are_rejected_without_mutation() {
                 }
             }
             assert!(matches!(
-                fixture.register(RegisterRequest {
+                fixture.register(api::RegisterRequest {
                     socket: path,
                     label: None
                 }),
@@ -156,7 +160,7 @@ fn invalid_paths_and_labels_preserve_existing_registration() {
     ] {
         assert!(
             fixture
-                .register(RegisterRequest {
+                .register(api::RegisterRequest {
                     socket,
                     label: None
                 })
@@ -211,7 +215,7 @@ fn concurrent_registration_has_one_id_and_one_entry() {
 fn full_registry_rejects_new_socket_but_allows_deduplication_and_replacement() {
     let fixture = Fixture::new();
     let mut listeners = Vec::new();
-    for index in 0..MAX_REGISTRATIONS {
+    for index in 0..api::MAX_REGISTRATIONS {
         let request = fixture.request(&format!("s{index}"));
         listeners.push(UnixListener::bind(&request.socket).unwrap());
         fixture.register(request).unwrap();
@@ -238,7 +242,7 @@ fn full_registry_rejects_new_socket_but_allows_deduplication_and_replacement() {
         .unwrap()
         .registration;
     let status = fixture.state.status();
-    assert_eq!(status.registrations.len(), MAX_REGISTRATIONS);
+    assert_eq!(status.registrations.len(), api::MAX_REGISTRATIONS);
     assert_eq!(status.registrations.last().unwrap(), &replacement);
     assert_eq!(
         status.recent_retirements[0].registration,
@@ -252,14 +256,14 @@ fn recent_retirement_history_has_a_fixed_bound() {
     let request = fixture.request("upstream");
     let _upstream = UnixListener::bind(&request.socket).unwrap();
     let mut ids = Vec::new();
-    for _ in 0..MAX_RETIREMENTS + 5 {
+    for _ in 0..api::MAX_RETIREMENTS + 5 {
         let registration = fixture.register(request.clone()).unwrap().registration;
         fixture.unregister(&registration.id);
         ids.push(registration.id);
     }
     let status = fixture.state.status();
     assert!(status.registrations.is_empty());
-    assert_eq!(status.recent_retirements.len(), MAX_RETIREMENTS);
+    assert_eq!(status.recent_retirements.len(), api::MAX_RETIREMENTS);
     assert_eq!(status.recent_retirements[0].registration.id, ids[5]);
     assert_eq!(
         status.recent_retirements.last().unwrap().registration.id,
@@ -271,9 +275,9 @@ fn recent_retirement_history_has_a_fixed_bound() {
 async fn escaped_metadata_cannot_make_status_exceed_the_rpc_frame_bound() {
     let fixture = Fixture::new();
     let mut listeners = Vec::new();
-    for index in 0..MAX_REGISTRATIONS {
+    for index in 0..api::MAX_REGISTRATIONS {
         let mut request = fixture.request(&format!("{}-{index}", "s".repeat(50)));
-        request.label = Some("\0".repeat(MAX_LABEL_BYTES));
+        request.label = Some("\0".repeat(api::MAX_LABEL_BYTES));
         listeners.push(UnixListener::bind(&request.socket).unwrap());
         let before = fixture.state.status();
         if let Err(error) = fixture.register(request) {
@@ -281,6 +285,24 @@ async fn escaped_metadata_cannot_make_status_exceed_the_rpc_frame_bound() {
             assert_eq!(fixture.state.status(), before);
             break;
         }
+    }
+    {
+        let mut registry = fixture.state.registry.lock();
+        for candidate in &mut registry.candidates {
+            candidate.registration.health = api::Health::TemporarilyUnavailable;
+            candidate.registration.observed_at = Some(Timestamp::MAX);
+            candidate.registration.last_failure = Some(api::ProbeFailure::MalformedReply);
+            candidate.registration.active_relays = 128;
+            candidate.retry_at = Some(Instant::now() + fixture.state.config.retry_max);
+        }
+        let id = registry.candidates[0].registration.id.clone();
+        registry.active = Some(id.clone());
+        registry.active_relays = 128;
+        registry.last_setup_failure = Some(api::SetupFailure::Deadline);
+        registry.last_relay_error = Some(api::RelayFailure {
+            registration: id,
+            observed_at: Timestamp::MAX,
+        });
     }
     let status = fixture.state.status();
     assert!(!status.registrations.is_empty());
@@ -353,6 +375,6 @@ fn label_limit_accepts_exactly_128_utf8_bytes() {
             .label
             .unwrap()
             .len(),
-        MAX_LABEL_BYTES
+        api::MAX_LABEL_BYTES
     );
 }

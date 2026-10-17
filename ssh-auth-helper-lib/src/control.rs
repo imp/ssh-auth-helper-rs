@@ -15,37 +15,20 @@ use jsonrpc_uds::RpcError;
 use jsonrpc_uds::RpcId;
 use jsonrpc_uds::RpcMessage;
 use jsonrpc_uds::TransportError;
-use ssh_auth_helper_api::HELLO_METHOD;
-use ssh_auth_helper_api::HelloRequest;
-use ssh_auth_helper_api::PROTOCOL_VERSION;
-use ssh_auth_helper_api::REGISTER_METHOD;
-use ssh_auth_helper_api::STATUS_METHOD;
-use ssh_auth_helper_api::StatusRequest;
-use ssh_auth_helper_api::UNREGISTER_METHOD;
-
-pub use ssh_auth_helper_api::RegisterRequest;
-pub use ssh_auth_helper_api::RegisterResponse;
-pub use ssh_auth_helper_api::RegistrationId;
-pub use ssh_auth_helper_api::StatusResponse;
-pub use ssh_auth_helper_api::UnregisterRequest;
-pub use ssh_auth_helper_api::UnregisterResponse;
 
 pub use jsonrpc_uds::MAX_FRAME_BYTES;
-pub use ssh_auth_helper_api::Endpoints;
-pub use ssh_auth_helper_api::HelloResponse;
 
 use super::*;
-use registry::State;
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(crate) fn hello_response(paths: &RuntimePaths) -> HelloResponse {
-    HelloResponse {
+pub(crate) fn hello_response(paths: &RuntimePaths) -> api::HelloResponse {
+    api::HelloResponse {
         instance: Uuid::new_v4(),
-        supported_versions: vec![PROTOCOL_VERSION],
+        supported_versions: vec![api::PROTOCOL_VERSION],
         ready: true,
-        endpoints: Endpoints {
+        endpoints: api::Endpoints {
             agent: paths.agent().to_owned(),
             control: paths.control().to_owned(),
         },
@@ -59,7 +42,7 @@ pub(crate) fn hello_response(paths: &RuntimePaths) -> HelloResponse {
 pub async fn wait_ready(
     paths: &RuntimePaths,
     deadline: Instant,
-) -> Result<HelloResponse, ControlError> {
+) -> Result<api::HelloResponse, ControlError> {
     loop {
         let attempt = deadline.min(Instant::now() + REQUEST_TIMEOUT);
         match hello_once(paths, attempt).await {
@@ -82,7 +65,7 @@ pub async fn wait_ready(
 async fn hello_once(
     paths: &RuntimePaths,
     deadline: Instant,
-) -> Result<HelloResponse, ControlError> {
+) -> Result<api::HelloResponse, ControlError> {
     let stream = timeout_at(deadline, net::UnixStream::connect(paths.control())).await??;
     runtime::authorize_peer_uid(&stream, rustix::process::getuid().as_raw())?;
     let hello = query_hello(stream, deadline).await?;
@@ -90,10 +73,10 @@ async fn hello_once(
     Ok(hello)
 }
 
-fn validate_hello(paths: &RuntimePaths, hello: &HelloResponse) -> Result<(), ControlError> {
+fn validate_hello(paths: &RuntimePaths, hello: &api::HelloResponse) -> Result<(), ControlError> {
     if !hello.ready
         || hello.instance.is_nil()
-        || !hello.supported_versions.contains(&PROTOCOL_VERSION)
+        || !hello.supported_versions.contains(&api::PROTOCOL_VERSION)
         || hello.endpoints.agent != paths.agent()
         || hello.endpoints.control != paths.control()
     {
@@ -107,9 +90,9 @@ fn validate_hello(paths: &RuntimePaths, hello: &HelloResponse) -> Result<(), Con
 async fn query_hello(
     stream: net::UnixStream,
     deadline: Instant,
-) -> Result<HelloResponse, ControlError> {
+) -> Result<api::HelloResponse, ControlError> {
     let mut wire = Framed::new(stream, JsonRpcCodec::default());
-    let result = query(&mut wire, HELLO_METHOD, None, deadline).await?;
+    let result = query(&mut wire, api::HELLO_METHOD, None, deadline).await?;
     json::from_value(result).map_err(|_| ControlError::InvalidReply)
 }
 
@@ -137,7 +120,7 @@ async fn query(
 // One authenticated connection and absolute deadline. Never retry a mutating call.
 struct Client {
     wire: Framed<net::UnixStream, JsonRpcCodec>,
-    hello: HelloResponse,
+    hello: api::HelloResponse,
     deadline: Instant,
 }
 
@@ -147,7 +130,7 @@ impl Client {
         let stream = timeout_at(deadline, net::UnixStream::connect(paths.control())).await??;
         runtime::authorize_peer_uid(&stream, rustix::process::getuid().as_raw())?;
         let mut wire = Framed::new(stream, JsonRpcCodec::default());
-        let result = query(&mut wire, HELLO_METHOD, None, deadline).await?;
+        let result = query(&mut wire, api::HELLO_METHOD, None, deadline).await?;
         let hello = json::from_value(result).map_err(|_| ControlError::InvalidReply)?;
         validate_hello(paths, &hello)?;
         Ok(Self {
@@ -172,14 +155,14 @@ impl Client {
 /// Reports invalid readiness, RPC rejection, transport failure or deadline expiry.
 pub async fn register(
     paths: &RuntimePaths,
-    request: RegisterRequest,
-) -> Result<RegisterResponse, ControlError> {
+    request: api::RegisterRequest,
+) -> Result<api::RegisterResponse, ControlError> {
     let mut client = Client::connect(paths).await?;
     let result = client
-        .call(REGISTER_METHOD, json::to_value(request)?)
+        .call(api::REGISTER_METHOD, json::to_value(request)?)
         .await?;
-    let response: RegisterResponse =
-        json::from_value(result).map_err(|_| ControlError::InvalidReply)?;
+    let response = json::from_value::<api::RegisterResponse>(result)
+        .map_err(|_| ControlError::InvalidReply)?;
     if response.registration.id.instance() != client.hello.instance {
         return Err(ControlError::InvalidReply);
     }
@@ -192,11 +175,11 @@ pub async fn register(
 /// Reports readiness, RPC, transport or deadline failures.
 pub async fn unregister(
     paths: &RuntimePaths,
-    request: UnregisterRequest,
-) -> Result<UnregisterResponse, ControlError> {
+    request: api::UnregisterRequest,
+) -> Result<api::UnregisterResponse, ControlError> {
     let mut client = Client::connect(paths).await?;
     let result = client
-        .call(UNREGISTER_METHOD, json::to_value(request)?)
+        .call(api::UNREGISTER_METHOD, json::to_value(request)?)
         .await?;
     json::from_value(result).map_err(|_| ControlError::InvalidReply)
 }
@@ -205,13 +188,13 @@ pub async fn unregister(
 ///
 /// # Errors
 /// Reports readiness, RPC, transport or deadline failures.
-pub async fn status(paths: &RuntimePaths) -> Result<StatusResponse, ControlError> {
+pub async fn status(paths: &RuntimePaths) -> Result<api::StatusResponse, ControlError> {
     let mut client = Client::connect(paths).await?;
     let result = client
-        .call(STATUS_METHOD, json::to_value(StatusRequest {})?)
+        .call(api::STATUS_METHOD, json::to_value(api::StatusRequest {})?)
         .await?;
-    let response: StatusResponse =
-        json::from_value(result).map_err(|_| ControlError::InvalidReply)?;
+    let response =
+        json::from_value::<api::StatusResponse>(result).map_err(|_| ControlError::InvalidReply)?;
     if response.instance != client.hello.instance || response.endpoints != client.hello.endpoints {
         return Err(ControlError::InvalidReply);
     }
@@ -238,18 +221,18 @@ fn execute(
     };
     let params = params.unwrap_or_else(|| json::json!({}));
     let result = match method.as_str() {
-        HELLO_METHOD => json::from_value::<HelloRequest>(params)
+        api::HELLO_METHOD => json::from_value::<api::HelloRequest>(params)
             .map_err(|_| RpcError::new(-32602, "Invalid params"))
             .and_then(|_| json::to_value(&state.hello).map_err(internal_error)),
-        REGISTER_METHOD => json::from_value::<RegisterRequest>(params)
+        api::REGISTER_METHOD => json::from_value::<api::RegisterRequest>(params)
             .map_err(|_| RpcError::new(-32602, "Invalid params"))
             .and_then(|request| state.register(request, deadline).map_err(Into::into))
             .and_then(|response| json::to_value(response).map_err(internal_error)),
-        UNREGISTER_METHOD => json::from_value::<UnregisterRequest>(params)
+        api::UNREGISTER_METHOD => json::from_value::<api::UnregisterRequest>(params)
             .map_err(|_| RpcError::new(-32602, "Invalid params"))
             .and_then(|request| state.unregister(&request.id, deadline).map_err(Into::into))
             .and_then(|response| json::to_value(response).map_err(internal_error)),
-        STATUS_METHOD => json::from_value::<StatusRequest>(params)
+        api::STATUS_METHOD => json::from_value::<api::StatusRequest>(params)
             .map_err(|_| RpcError::new(-32602, "Invalid params"))
             .and_then(|_| json::to_value(state.status()).map_err(internal_error)),
         _ => Err(RpcError::new(-32601, "Method not found")),
