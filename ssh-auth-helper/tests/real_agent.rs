@@ -1,6 +1,8 @@
 //! Opt-in smoke test using temporary keys and isolated OpenSSH agents only.
 
 use std::fs;
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Child;
 use std::process::Command;
 use std::process::Output;
@@ -148,7 +150,10 @@ fn sign(paths: &RuntimePaths, agent: &Agent) {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires installed OpenSSH ssh-agent, ssh-keygen and ssh-add; creates isolated temporary keys"]
 async fn real_agents_support_empty_health_signing_sticky_selection_and_failover() {
-    let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let directory = camino_tempfile::Builder::new()
+        .permissions(Permissions::from_mode(0o700))
+        .tempdir_in("/tmp")
+        .unwrap();
     let base = directory.path();
     let paths = RuntimePaths::discover(Some(&base.join("helper")), None).unwrap();
     let daemon = Process::spawn(helper(&paths).arg("serve"));

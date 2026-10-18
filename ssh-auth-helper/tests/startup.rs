@@ -1,4 +1,5 @@
 use std::fs;
+use std::fs::Permissions;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
@@ -27,7 +28,10 @@ use tokio::task;
 use tokio::time::Instant;
 
 fn fixture() -> (camino_tempfile::Utf8TempDir, RuntimePaths) {
-    let parent = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let parent = camino_tempfile::Builder::new()
+        .permissions(Permissions::from_mode(0o700))
+        .tempdir_in("/tmp")
+        .unwrap();
     let path = parent.path().join("helper");
     let paths = RuntimePaths::discover(Some(&path), None).unwrap();
     (parent, paths)

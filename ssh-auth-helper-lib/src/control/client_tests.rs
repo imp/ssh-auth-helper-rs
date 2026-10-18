@@ -1,6 +1,8 @@
 //! Reuse, per-operation deadlines and fail-closed ownership of a management connection.
 
 use super::*;
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 
 use readiness_tests::closed;
 use readiness_tests::read_request;
@@ -29,7 +31,10 @@ fn unregister_request(client: &Client) -> api::UnregisterRequest {
 
 #[tokio::test(flavor = "current_thread")]
 async fn public_methods_reuse_one_connection_for_all_verbs() {
-    let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let directory = camino_tempfile::Builder::new()
+        .permissions(Permissions::from_mode(0o700))
+        .tempdir_in("/tmp")
+        .unwrap();
     let base = directory.path();
     let paths = RuntimePaths::discover(Some(&base.join("helper")), None).unwrap();
     let (shutdown, stopped) = tokio::sync::oneshot::channel();

@@ -399,10 +399,15 @@ fn require_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::Permissions;
+    use std::os::unix::fs::PermissionsExt;
 
     #[tokio::test(flavor = "current_thread")]
     async fn partial_startup_rolls_back_only_the_created_socket() {
-        let parent = camino_tempfile::tempdir_in("/tmp").unwrap();
+        let parent = camino_tempfile::Builder::new()
+            .permissions(Permissions::from_mode(0o700))
+            .tempdir_in("/tmp")
+            .unwrap();
         let path = parent.path().join("helper");
         let paths = RuntimePaths::discover(Some(&path), None).unwrap();
         let lock = RuntimeLock::acquire(RuntimeDirectory::prepare(paths.clone()).unwrap()).unwrap();

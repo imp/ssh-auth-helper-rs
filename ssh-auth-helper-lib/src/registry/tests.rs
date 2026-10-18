@@ -1,3 +1,5 @@
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::fs::symlink;
 use std::os::unix::net::UnixListener;
 
@@ -13,7 +15,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+        let directory = camino_tempfile::Builder::new()
+            .permissions(Permissions::from_mode(0o700))
+            .tempdir_in("/tmp")
+            .unwrap();
         let base = directory.path().to_owned();
         let paths = RuntimePaths::discover(Some(&base), None).unwrap();
         let agent = UnixListener::bind(paths.agent()).unwrap();

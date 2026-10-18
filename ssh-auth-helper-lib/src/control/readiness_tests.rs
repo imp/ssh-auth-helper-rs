@@ -1,5 +1,7 @@
 //! Fake peers deliberately use raw lines to exercise rejected wire messages.
 
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 use tokio_util::codec::LinesCodec;
 
 use super::*;
@@ -211,7 +213,10 @@ async fn typed_calls_preserve_verb_specific_response_validation() {
         (api::STATUS_METHOD, false),
         (api::STATUS_METHOD, true),
     ] {
-        let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+        let directory = camino_tempfile::Builder::new()
+            .permissions(Permissions::from_mode(0o700))
+            .tempdir_in("/tmp")
+            .unwrap();
         let base = directory.path();
         let paths = RuntimePaths::discover(Some(base), None).unwrap();
         let listener = net::UnixListener::bind(paths.control()).unwrap();

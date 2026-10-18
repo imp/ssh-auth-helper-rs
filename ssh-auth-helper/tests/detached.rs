@@ -1,9 +1,14 @@
 //! Subprocess fixtures keep descriptor/environment manipulation out of the runner.
 
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 fn scenario(name: &str) {
-    let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let directory = camino_tempfile::Builder::new()
+        .permissions(Permissions::from_mode(0o700))
+        .tempdir_in("/tmp")
+        .unwrap();
     let output = Command::new("python3")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),

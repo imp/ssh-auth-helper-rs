@@ -2,11 +2,13 @@
 
 use std::ffi;
 use std::fs;
+use std::fs::Permissions;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
 use std::process::Child;
@@ -29,7 +31,10 @@ struct Server {
 
 impl Server {
     async fn start() -> Self {
-        let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+        let directory = camino_tempfile::Builder::new()
+            .permissions(Permissions::from_mode(0o700))
+            .tempdir_in("/tmp")
+            .unwrap();
         let path = directory.path().join("helper");
         let paths = RuntimePaths::discover(Some(&path), None).unwrap();
         let child = command(&paths)
@@ -273,7 +278,10 @@ async fn replacement_and_invalid_requests_preserve_the_current_registry() {
 
 #[test]
 fn management_does_not_start_a_missing_daemon() {
-    let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let directory = camino_tempfile::Builder::new()
+        .permissions(Permissions::from_mode(0o700))
+        .tempdir_in("/tmp")
+        .unwrap();
     let path = directory.path().join("helper");
     let paths = RuntimePaths::discover(Some(&path), None).unwrap();
     let output = command(&paths).arg("status").output().unwrap();
@@ -284,7 +292,10 @@ fn management_does_not_start_a_missing_daemon() {
 
 #[test]
 fn uncertain_registration_reply_is_not_replayed() {
-    let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let directory = camino_tempfile::Builder::new()
+        .permissions(Permissions::from_mode(0o700))
+        .tempdir_in("/tmp")
+        .unwrap();
     let base = directory.path();
     let paths = RuntimePaths::discover(Some(base), None).unwrap();
     let listener = UnixListener::bind(paths.control()).unwrap();

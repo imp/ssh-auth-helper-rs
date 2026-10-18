@@ -1,3 +1,5 @@
+use std::fs::Permissions;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -14,7 +16,10 @@ struct Fixture {
 
 impl Fixture {
     fn new(config: ForwardingConfig) -> Self {
-        let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+        let directory = camino_tempfile::Builder::new()
+            .permissions(Permissions::from_mode(0o700))
+            .tempdir_in("/tmp")
+            .unwrap();
         let base = directory.path().to_owned();
         let paths = RuntimePaths::discover(Some(&base), None).unwrap();
         let agent = net::UnixListener::bind(paths.agent()).unwrap();
@@ -537,7 +542,10 @@ async fn retirement_eviction_does_not_lose_an_existing_relay_count() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn agent_and_management_limits_are_independent_and_shutdown_releases_relays() {
-    let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let directory = camino_tempfile::Builder::new()
+        .permissions(Permissions::from_mode(0o700))
+        .tempdir_in("/tmp")
+        .unwrap();
     let base = directory.path();
     let paths = RuntimePaths::discover(Some(&base.join("helper")), None).unwrap();
     let mut config = limits();
