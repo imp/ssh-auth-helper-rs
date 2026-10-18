@@ -328,7 +328,7 @@ fn foreign_owned_socket_is_rejected_without_mutation() {
     let request = fixture.request("foreign");
     let _upstream = UnixListener::bind(&request.socket).unwrap();
     rustix::fs::chown(
-        &request.socket,
+        request.socket.as_str(),
         Some(rustix::process::Uid::from_raw(1001)),
         None,
     )
