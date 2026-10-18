@@ -1,10 +1,20 @@
 //! Shared management API contract for ssh-auth-helper. No runtime discovery or I/O.
 
+use std::fmt;
+use std::str;
+
 use camino::Utf8PathBuf;
+use jiff::Timestamp;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
+pub use forwarding::ForwardingBounds;
+pub use forwarding::ProbeFailure;
+pub use forwarding::RelayFailure;
+pub use forwarding::SetupFailure;
+pub use hello::HelloRequest;
 pub use registration::Health;
 pub use registration::MAX_LABEL_BYTES;
 pub use registration::MAX_REGISTRATIONS;
@@ -24,22 +34,20 @@ pub use registration::UnregisterRequest;
 pub use registration::UnregisterResponse;
 
 mod forwarding;
+mod hello;
 mod registration;
-
-pub use forwarding::ForwardingBounds;
-pub use forwarding::ProbeFailure;
-pub use forwarding::RelayFailure;
-pub use forwarding::SetupFailure;
 
 /// Helper capability version, independent of the JSON-RPC envelope version.
 pub const PROTOCOL_VERSION: u32 = 1;
 /// Method used to query initialized listeners.
-pub const HELLO_METHOD: &str = "hello";
+pub const HELLO_METHOD: &str = hello::HelloRequest::METHOD;
 
-/// Hello has no application parameters.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HelloRequest {}
+/// A management request owns its wire method name and corresponding response type.
+pub trait Request: Serialize + DeserializeOwned {
+    const METHOD: &'static str;
+
+    type Response: Serialize + DeserializeOwned;
+}
 
 /// Public endpoint paths; constructing these values does not validate filesystem safety.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,28 +65,4 @@ pub struct HelloResponse {
     pub supported_versions: Vec<u32>,
     pub ready: bool,
     pub endpoints: Endpoints,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hello_schema_round_trips_without_runtime_discovery() {
-        let response = HelloResponse {
-            instance: Uuid::from_u128(1),
-            supported_versions: vec![PROTOCOL_VERSION],
-            ready: true,
-            endpoints: Endpoints {
-                agent: "/example/agent.sock".into(),
-                control: "/example/control.sock".into(),
-            },
-        };
-        let encoded = serde_json::to_string(&response).unwrap();
-        assert_eq!(
-            serde_json::from_str::<HelloResponse>(&encoded).unwrap(),
-            response
-        );
-        assert!(serde_json::from_str::<HelloRequest>(r#"{"unexpected":true}"#).is_err());
-    }
 }

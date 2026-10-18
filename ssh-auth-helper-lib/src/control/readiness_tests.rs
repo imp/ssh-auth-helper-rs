@@ -202,3 +202,83 @@ async fn eof_without_response_is_invalid() {
     ));
     fake.await.unwrap();
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn typed_calls_preserve_verb_specific_response_validation() {
+    for (method, invalid) in [
+        (api::REGISTER_METHOD, false),
+        (api::REGISTER_METHOD, true),
+        (api::STATUS_METHOD, false),
+        (api::STATUS_METHOD, true),
+    ] {
+        let directory = tempfile::tempdir_in("/tmp").unwrap();
+        let base = Utf8Path::from_path(directory.path()).unwrap();
+        let paths = RuntimePaths::discover(Some(base), None).unwrap();
+        let listener = net::UnixListener::bind(paths.control()).unwrap();
+        let hello = hello_response(&paths);
+        let mut instance = hello.instance;
+        if invalid && method == api::REGISTER_METHOD {
+            instance = Uuid::new_v4();
+        }
+        let result = if method == api::REGISTER_METHOD {
+            json::json!({"registration": {
+                "id": api::RegistrationId::new(instance, Uuid::new_v4()).unwrap(),
+                "socket": "/tmp/upstream", "registered_at": jiff::Timestamp::now(),
+                "health": "unobserved", "active_relays": 0
+            }})
+        } else {
+            let mut response = State::fixture(hello.clone()).status();
+            if invalid {
+                response.endpoints.agent = "/wrong/agent.sock".into();
+            }
+            json::to_value(response).unwrap()
+        };
+        let fake = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut peer = wire(stream);
+            let request = read_request(&mut peer).await;
+            assert_eq!(request["method"], api::HELLO_METHOD);
+            assert!(request.get("params").is_none());
+            peer.send(
+                json::json!({"jsonrpc":"2.0", "id":request["id"], "result":hello}).to_string(),
+            )
+            .await
+            .unwrap();
+            let request = read_request(&mut peer).await;
+            assert_eq!(request["method"], method);
+            if method == api::REGISTER_METHOD {
+                assert_eq!(request["params"], json::json!({"socket":"/tmp/upstream"}));
+            } else {
+                assert_eq!(request["params"], json::json!({}));
+            }
+            peer.send(
+                json::json!({"jsonrpc":"2.0", "id":request["id"], "result":result}).to_string(),
+            )
+            .await
+            .unwrap();
+            closed(&mut peer).await;
+        });
+        let outcome = if method == api::REGISTER_METHOD {
+            register(
+                &paths,
+                api::RegisterRequest {
+                    socket: "/tmp/upstream".into(),
+                    label: None,
+                },
+            )
+            .await
+            .map(|_| ())
+        } else {
+            status(&paths).await.map(|_| ())
+        };
+        if invalid {
+            assert!(
+                matches!(outcome, Err(ControlError::InvalidReply)),
+                "{method}: {outcome:?}"
+            );
+        } else {
+            outcome.unwrap();
+        }
+        fake.await.unwrap();
+    }
+}

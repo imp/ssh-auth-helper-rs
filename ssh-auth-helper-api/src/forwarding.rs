@@ -1,7 +1,5 @@
 //! Bounded health and forwarding diagnostics. Never contains agent payloads.
 
-use jiff::Timestamp;
-
 use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

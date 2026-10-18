@@ -19,6 +19,7 @@ use jsonrpc_uds::TransportError;
 pub use jsonrpc_uds::MAX_FRAME_BYTES;
 
 use super::*;
+use api::Request;
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -92,29 +93,28 @@ async fn query_hello(
     deadline: Instant,
 ) -> Result<api::HelloResponse, ControlError> {
     let mut wire = Framed::new(stream, JsonRpcCodec::default());
-    let result = query(&mut wire, api::HELLO_METHOD, None, deadline).await?;
-    json::from_value(result).map_err(|_| ControlError::InvalidReply)
+    query::<api::HelloRequest>(&mut wire, None, deadline).await
 }
 
-async fn query(
+async fn query<R: api::Request>(
     wire: &mut Framed<net::UnixStream, JsonRpcCodec>,
-    method: &str,
     params: Option<json::Value>,
     deadline: Instant,
-) -> Result<json::Value, ControlError> {
+) -> Result<R::Response, ControlError> {
     let id = RpcId::String(Uuid::new_v4().to_string());
     timeout_at(
         deadline,
-        wire.send(RpcMessage::request(&id, method, params)),
+        wire.send(RpcMessage::request(&id, R::METHOD, params)),
     )
     .await??;
-    timeout_at(deadline, wire.next())
+    let result = timeout_at(deadline, wire.next())
         .await?
         .ok_or(ControlError::InvalidReply)??
         .into_result()
         .and_then(|(reply_id, result)| (reply_id == id).then_some(result))
         .ok_or(ControlError::InvalidReply)?
-        .map_err(ControlError::Rpc)
+        .map_err(ControlError::Rpc)?;
+    json::from_value(result).map_err(|_| ControlError::InvalidReply)
 }
 
 // One authenticated connection and absolute deadline. Never retry a mutating call.
@@ -130,8 +130,7 @@ impl Client {
         let stream = timeout_at(deadline, net::UnixStream::connect(paths.control())).await??;
         runtime::authorize_peer_uid(&stream, rustix::process::getuid().as_raw())?;
         let mut wire = Framed::new(stream, JsonRpcCodec::default());
-        let result = query(&mut wire, api::HELLO_METHOD, None, deadline).await?;
-        let hello = json::from_value(result).map_err(|_| ControlError::InvalidReply)?;
+        let hello = query::<api::HelloRequest>(&mut wire, None, deadline).await?;
         validate_hello(paths, &hello)?;
         Ok(Self {
             wire,
@@ -140,12 +139,13 @@ impl Client {
         })
     }
 
-    async fn call(
-        &mut self,
-        method: &str,
-        params: json::Value,
-    ) -> Result<json::Value, ControlError> {
-        query(&mut self.wire, method, Some(params), self.deadline).await
+    async fn call<R: api::Request>(&mut self, request: R) -> Result<R::Response, ControlError> {
+        query::<R>(
+            &mut self.wire,
+            Some(json::to_value(request)?),
+            self.deadline,
+        )
+        .await
     }
 }
 
@@ -158,11 +158,7 @@ pub async fn register(
     request: api::RegisterRequest,
 ) -> Result<api::RegisterResponse, ControlError> {
     let mut client = Client::connect(paths).await?;
-    let result = client
-        .call(api::REGISTER_METHOD, json::to_value(request)?)
-        .await?;
-    let response = json::from_value::<api::RegisterResponse>(result)
-        .map_err(|_| ControlError::InvalidReply)?;
+    let response = client.call(request).await?;
     if response.registration.id.instance() != client.hello.instance {
         return Err(ControlError::InvalidReply);
     }
@@ -178,10 +174,7 @@ pub async fn unregister(
     request: api::UnregisterRequest,
 ) -> Result<api::UnregisterResponse, ControlError> {
     let mut client = Client::connect(paths).await?;
-    let result = client
-        .call(api::UNREGISTER_METHOD, json::to_value(request)?)
-        .await?;
-    json::from_value(result).map_err(|_| ControlError::InvalidReply)
+    client.call(request).await
 }
 
 /// Inspect bounded registry metadata without probing any upstream socket.
@@ -190,11 +183,7 @@ pub async fn unregister(
 /// Reports readiness, RPC, transport or deadline failures.
 pub async fn status(paths: &RuntimePaths) -> Result<api::StatusResponse, ControlError> {
     let mut client = Client::connect(paths).await?;
-    let result = client
-        .call(api::STATUS_METHOD, json::to_value(api::StatusRequest {})?)
-        .await?;
-    let response =
-        json::from_value::<api::StatusResponse>(result).map_err(|_| ControlError::InvalidReply)?;
+    let response = client.call(api::StatusRequest {}).await?;
     if response.instance != client.hello.instance || response.endpoints != client.hello.endpoints {
         return Err(ControlError::InvalidReply);
     }
@@ -221,23 +210,28 @@ fn execute(
     };
     let params = params.unwrap_or_else(|| json::json!({}));
     let result = match method.as_str() {
-        api::HELLO_METHOD => json::from_value::<api::HelloRequest>(params)
-            .map_err(|_| RpcError::new(-32602, "Invalid params"))
-            .and_then(|_| json::to_value(&state.hello).map_err(internal_error)),
-        api::REGISTER_METHOD => json::from_value::<api::RegisterRequest>(params)
-            .map_err(|_| RpcError::new(-32602, "Invalid params"))
-            .and_then(|request| state.register(request, deadline).map_err(Into::into))
-            .and_then(|response| json::to_value(response).map_err(internal_error)),
-        api::UNREGISTER_METHOD => json::from_value::<api::UnregisterRequest>(params)
-            .map_err(|_| RpcError::new(-32602, "Invalid params"))
-            .and_then(|request| state.unregister(&request.id, deadline).map_err(Into::into))
-            .and_then(|response| json::to_value(response).map_err(internal_error)),
-        api::STATUS_METHOD => json::from_value::<api::StatusRequest>(params)
-            .map_err(|_| RpcError::new(-32602, "Invalid params"))
-            .and_then(|_| json::to_value(state.status()).map_err(internal_error)),
+        api::HelloRequest::METHOD => {
+            invoke::<api::HelloRequest>(params, |_| Ok(state.hello.clone()))
+        }
+        api::RegisterRequest::METHOD => invoke::<api::RegisterRequest>(params, |request| {
+            state.register(request, deadline).map_err(Into::into)
+        }),
+        api::UnregisterRequest::METHOD => invoke::<api::UnregisterRequest>(params, |request| {
+            state.unregister(&request.id, deadline).map_err(Into::into)
+        }),
+        api::StatusRequest::METHOD => invoke::<api::StatusRequest>(params, |_| Ok(state.status())),
         _ => Err(RpcError::new(-32601, "Method not found")),
     };
     Ok(id.map(|id| RpcMessage::from_result(id, result)))
+}
+
+fn invoke<R: api::Request>(
+    params: json::Value,
+    handler: impl FnOnce(R) -> Result<R::Response, RpcError>,
+) -> Result<json::Value, RpcError> {
+    let request = json::from_value(params).map_err(|_| RpcError::new(-32602, "Invalid params"))?;
+    let response = handler(request)?;
+    json::to_value(response).map_err(internal_error)
 }
 
 fn dispatch(

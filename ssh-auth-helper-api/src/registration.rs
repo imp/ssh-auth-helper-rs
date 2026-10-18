@@ -1,15 +1,10 @@
 //! Registration IDs and management schemas; filesystem validation belongs to the daemon.
 
-use std::fmt;
-use std::str::FromStr;
-
-use jiff::Timestamp;
-
 use super::*;
 
-pub const REGISTER_METHOD: &str = "register";
-pub const UNREGISTER_METHOD: &str = "unregister";
-pub const STATUS_METHOD: &str = "status";
+pub const REGISTER_METHOD: &str = RegisterRequest::METHOD;
+pub const UNREGISTER_METHOD: &str = UnregisterRequest::METHOD;
+pub const STATUS_METHOD: &str = StatusRequest::METHOD;
 pub const MAX_REGISTRATIONS: usize = 64;
 pub const MAX_RETIREMENTS: usize = 64;
 pub const MAX_LABEL_BYTES: usize = 128;
@@ -48,7 +43,7 @@ impl fmt::Display for RegistrationId {
     }
 }
 
-impl FromStr for RegistrationId {
+impl str::FromStr for RegistrationId {
     type Err = &'static str;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
@@ -81,6 +76,12 @@ pub struct RegisterRequest {
     pub socket: Utf8PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+}
+
+impl Request for RegisterRequest {
+    const METHOD: &'static str = "register";
+
+    type Response = RegisterResponse;
 }
 
 /// Last observed connectivity, not a promise of signing capability.
@@ -132,6 +133,12 @@ pub struct UnregisterRequest {
     pub id: RegistrationId,
 }
 
+impl Request for UnregisterRequest {
+    const METHOD: &'static str = "unregister";
+
+    type Response = UnregisterResponse;
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnregisterResponse {}
@@ -139,6 +146,12 @@ pub struct UnregisterResponse {}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StatusRequest {}
+
+impl Request for StatusRequest {
+    const METHOD: &'static str = "status";
+
+    type Response = StatusResponse;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

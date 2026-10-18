@@ -160,8 +160,11 @@ The Cargo workspace has four peer packages, all inheriting shared Rust/Clippy li
   authorize endpoints and peers before constructing the framed stream.
 
 The wire types are small owned Serde types, with no RPC framework or raw JSON
-payloads. Readiness sends one identified request and checks its response under
-one absolute connect/send/receive budget. Every return closes that connection;
+payloads. Each API request implements `api::Request`, associating its method name
+with its response type. Client calls and server dispatch share typed encoding and
+decoding while per-operation validation stays in the core library. Readiness sends
+one identified request and checks its response under one absolute
+connect/send/receive budget. Every return closes that connection;
 there are no background client tasks or automatic request replays.
 
 To use the proxy while that foreground daemon remains running:
