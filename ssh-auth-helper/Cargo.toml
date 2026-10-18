@@ -13,8 +13,8 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [dev-dependencies]
+camino-tempfile.workspace = true
 rustix.workspace = true
-tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "time"] }
 uuid = { workspace = true, features = ["v4"] }
 

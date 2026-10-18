@@ -8,7 +8,7 @@ fn binary() -> Command {
 
 #[test]
 fn hidden_xdg_option_selects_helper_directory() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = camino_tempfile::tempdir().unwrap();
     let output = binary()
         .arg("socket-path")
         .arg("--xdg-runtime-dir")
@@ -18,11 +18,7 @@ fn hidden_xdg_option_selects_helper_directory() {
     assert!(output.status.success());
     assert_eq!(
         output.stdout,
-        format!(
-            "{}\n",
-            dir.path().join("ssh-auth-helper/agent.sock").display()
-        )
-        .as_bytes()
+        format!("{}\n", dir.path().join("ssh-auth-helper/agent.sock")).as_bytes()
     );
     assert!(output.stderr.is_empty());
     assert!(!dir.path().join("ssh-auth-helper").exists());
@@ -30,7 +26,7 @@ fn hidden_xdg_option_selects_helper_directory() {
 
 #[test]
 fn explicit_directory_overrides_non_utf8_xdg_option() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = camino_tempfile::tempdir().unwrap();
     let runtime = dir.path().join("helper");
     let output = binary()
         .arg("--xdg-runtime-dir")
@@ -43,14 +39,14 @@ fn explicit_directory_overrides_non_utf8_xdg_option() {
     assert!(output.status.success());
     assert_eq!(
         output.stdout,
-        format!("{}\n", runtime.join("agent.sock").display()).as_bytes()
+        format!("{}\n", runtime.join("agent.sock")).as_bytes()
     );
     assert!(output.stderr.is_empty());
 }
 
 #[test]
 fn socket_path_discovery_has_no_filesystem_side_effects() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = camino_tempfile::tempdir().unwrap();
     let runtime = dir.path().join("helper");
     let output = binary()
         .arg("--runtime-dir")
@@ -61,7 +57,7 @@ fn socket_path_discovery_has_no_filesystem_side_effects() {
     assert!(output.status.success());
     assert_eq!(
         output.stdout,
-        format!("{}\n", runtime.join("agent.sock").display()).as_bytes()
+        format!("{}\n", runtime.join("agent.sock")).as_bytes()
     );
     assert!(output.stderr.is_empty());
     assert!(!runtime.exists());

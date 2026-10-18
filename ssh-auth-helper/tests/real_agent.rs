@@ -148,8 +148,8 @@ fn sign(paths: &RuntimePaths, agent: &Agent) {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires installed OpenSSH ssh-agent, ssh-keygen and ssh-add; creates isolated temporary keys"]
 async fn real_agents_support_empty_health_signing_sticky_selection_and_failover() {
-    let directory = tempfile::tempdir_in("/tmp").unwrap();
-    let base = Utf8Path::from_path(directory.path()).unwrap();
+    let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let base = directory.path();
     let paths = RuntimePaths::discover(Some(&base.join("helper")), None).unwrap();
     let daemon = Process::spawn(helper(&paths).arg("serve"));
     control::wait_ready(&paths, tokio::time::Instant::now() + Duration::from_secs(5))

@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use super::*;
 
 struct Fixture {
-    _directory: tempfile::TempDir,
+    _directory: camino_tempfile::Utf8TempDir,
     _agent: net::UnixListener,
     _control: net::UnixListener,
     base: Utf8PathBuf,
@@ -14,8 +14,8 @@ struct Fixture {
 
 impl Fixture {
     fn new(config: ForwardingConfig) -> Self {
-        let directory = tempfile::tempdir_in("/tmp").unwrap();
-        let base = Utf8Path::from_path(directory.path()).unwrap().to_owned();
+        let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+        let base = directory.path().to_owned();
         let paths = RuntimePaths::discover(Some(&base), None).unwrap();
         let agent = net::UnixListener::bind(paths.agent()).unwrap();
         let control = net::UnixListener::bind(paths.control()).unwrap();
@@ -537,8 +537,8 @@ async fn retirement_eviction_does_not_lose_an_existing_relay_count() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn agent_and_management_limits_are_independent_and_shutdown_releases_relays() {
-    let directory = tempfile::tempdir_in("/tmp").unwrap();
-    let base = Utf8Path::from_path(directory.path()).unwrap();
+    let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let base = directory.path();
     let paths = RuntimePaths::discover(Some(&base.join("helper")), None).unwrap();
     let mut config = limits();
     config.agent_clients = 2;

@@ -28,8 +28,8 @@ fn unregister_request(client: &Client) -> api::UnregisterRequest {
 
 #[tokio::test(flavor = "current_thread")]
 async fn public_methods_reuse_one_connection_for_all_verbs() {
-    let directory = tempfile::tempdir_in("/tmp").unwrap();
-    let base = Utf8Path::from_path(directory.path()).unwrap();
+    let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let base = directory.path();
     let paths = RuntimePaths::discover(Some(&base.join("helper")), None).unwrap();
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(crate::daemon::serve_until(paths.clone(), async {

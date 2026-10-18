@@ -7,14 +7,13 @@ use std::sync::Arc;
 use std::sync::Barrier;
 use std::thread;
 
-use camino::Utf8PathBuf;
 use ssh_auth_helper_lib::runtime::RuntimeDirectory;
 use ssh_auth_helper_lib::runtime::RuntimeError;
 use ssh_auth_helper_lib::runtime::RuntimePaths;
 
-fn fixture() -> (tempfile::TempDir, RuntimePaths) {
-    let parent = tempfile::tempdir_in("/tmp").unwrap();
-    let path = Utf8PathBuf::from_path_buf(parent.path().join("helper")).unwrap();
+fn fixture() -> (camino_tempfile::Utf8TempDir, RuntimePaths) {
+    let parent = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let path = parent.path().join("helper");
     let paths = RuntimePaths::discover(Some(&path), None).unwrap();
     (parent, paths)
 }
@@ -52,7 +51,7 @@ fn missing_leaf_is_created_privately_and_valid_directory_is_reused() {
 #[test]
 fn missing_parent_is_not_created_recursively() {
     let (parent, _) = fixture();
-    let path = Utf8PathBuf::from_path_buf(parent.path().join("missing/helper")).unwrap();
+    let path = parent.path().join("missing/helper");
     let paths = RuntimePaths::discover(Some(&path), None).unwrap();
     assert!(matches!(
         RuntimeDirectory::prepare(paths),
@@ -137,7 +136,7 @@ fn writable_non_sticky_ancestor_is_rejected_before_creation() {
 #[test]
 fn ancestor_alias_policy_follows_only_root_owned_links() {
     let (parent, _) = fixture();
-    let target = Utf8PathBuf::from_path_buf(parent.path().join("target")).unwrap();
+    let target = parent.path().join("target");
     fs::create_dir(&target).unwrap();
     set_mode(&target, 0o700);
     let alias = target.with_file_name("alias");
@@ -366,7 +365,7 @@ mod privileged {
         }
 
         let (parent, paths) = fixture();
-        change_owner(camino::Utf8Path::from_path(parent.path()).unwrap());
+        change_owner(parent.path());
         assert!(matches!(
             RuntimeDirectory::prepare(paths.clone()),
             Err(RuntimeError::UnsafePath { .. })
@@ -379,7 +378,7 @@ mod privileged {
     fn foreign_owned_ancestor_alias_is_rejected() {
         require_root();
         let (parent, _) = fixture();
-        let alias = Utf8PathBuf::from_path_buf(parent.path().join("alias")).unwrap();
+        let alias = parent.path().join("alias");
         symlink("/tmp", &alias).unwrap();
         change_owner(&alias);
         let leaf = alias.join("must-not-be-created");
@@ -396,7 +395,7 @@ mod privileged {
     fn root_owned_symlink_loop_hits_finite_traversal_limit() {
         require_root();
         let (parent, _) = fixture();
-        let alias = Utf8PathBuf::from_path_buf(parent.path().join("loop")).unwrap();
+        let alias = parent.path().join("loop");
         symlink("loop", &alias).unwrap();
         let leaf = alias.join("helper");
         let paths = RuntimePaths::discover(Some(&leaf), None).unwrap();

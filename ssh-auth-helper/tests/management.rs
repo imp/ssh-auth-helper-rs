@@ -15,7 +15,6 @@ use std::process::Output;
 use std::process::Stdio;
 use std::time::Duration;
 
-use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use serde_json as json;
 use ssh_auth_helper_lib::control;
@@ -23,17 +22,15 @@ use ssh_auth_helper_lib::runtime::RuntimePaths;
 use tokio::time::Instant;
 
 struct Server {
-    _directory: tempfile::TempDir,
+    _directory: camino_tempfile::Utf8TempDir,
     paths: RuntimePaths,
     child: Child,
 }
 
 impl Server {
     async fn start() -> Self {
-        let directory = tempfile::tempdir_in("/tmp").unwrap();
-        let path = Utf8Path::from_path(directory.path())
-            .unwrap()
-            .join("helper");
+        let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+        let path = directory.path().join("helper");
         let paths = RuntimePaths::discover(Some(&path), None).unwrap();
         let child = command(&paths)
             .arg("serve")
@@ -276,10 +273,8 @@ async fn replacement_and_invalid_requests_preserve_the_current_registry() {
 
 #[test]
 fn management_does_not_start_a_missing_daemon() {
-    let directory = tempfile::tempdir_in("/tmp").unwrap();
-    let path = Utf8Path::from_path(directory.path())
-        .unwrap()
-        .join("helper");
+    let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let path = directory.path().join("helper");
     let paths = RuntimePaths::discover(Some(&path), None).unwrap();
     let output = command(&paths).arg("status").output().unwrap();
     assert!(!output.status.success());
@@ -289,8 +284,8 @@ fn management_does_not_start_a_missing_daemon() {
 
 #[test]
 fn uncertain_registration_reply_is_not_replayed() {
-    let directory = tempfile::tempdir_in("/tmp").unwrap();
-    let base = Utf8Path::from_path(directory.path()).unwrap();
+    let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let base = directory.path();
     let paths = RuntimePaths::discover(Some(base), None).unwrap();
     let listener = UnixListener::bind(paths.control()).unwrap();
     let fake_paths = paths.clone();

@@ -9,6 +9,7 @@ edition = "2024"
 [workspace.dependencies]
 bytes = "1.12"
 camino = { version = "1.2", features = ["serde1"] }
+camino-tempfile = "1.4"
 clap = { version = "4.6", features = ["derive", "env"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 jiff = { version = "0.2", default-features = false, features = ["serde", "std"] }
@@ -24,7 +25,6 @@ uuid = { version = "1.28", features = ["serde"] }
 jsonrpc-uds = { path = "./jsonrpc-uds" }
 ssh-auth-helper-lib = { path = "./ssh-auth-helper-lib" }
 ssh-auth-helper-api = { path = "./ssh-auth-helper-api" }
-tempfile = "3"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

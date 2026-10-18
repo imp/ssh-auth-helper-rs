@@ -14,7 +14,6 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use camino::Utf8Path;
-use camino::Utf8PathBuf;
 use serde_json as json;
 use ssh_auth_helper_lib::api;
 use ssh_auth_helper_lib::control;
@@ -27,9 +26,9 @@ use tokio::net;
 use tokio::task;
 use tokio::time::Instant;
 
-fn fixture() -> (tempfile::TempDir, RuntimePaths) {
-    let parent = tempfile::tempdir_in("/tmp").unwrap();
-    let path = Utf8PathBuf::from_path_buf(parent.path().join("helper")).unwrap();
+fn fixture() -> (camino_tempfile::Utf8TempDir, RuntimePaths) {
+    let parent = camino_tempfile::tempdir_in("/tmp").unwrap();
+    let path = parent.path().join("helper");
     let paths = RuntimePaths::discover(Some(&path), None).unwrap();
     (parent, paths)
 }

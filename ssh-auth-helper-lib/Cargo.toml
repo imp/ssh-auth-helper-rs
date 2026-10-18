@@ -19,7 +19,7 @@ tokio-util.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-tempfile.workspace = true
+camino-tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

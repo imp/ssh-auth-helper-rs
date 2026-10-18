@@ -211,8 +211,8 @@ async fn typed_calls_preserve_verb_specific_response_validation() {
         (api::STATUS_METHOD, false),
         (api::STATUS_METHOD, true),
     ] {
-        let directory = tempfile::tempdir_in("/tmp").unwrap();
-        let base = Utf8Path::from_path(directory.path()).unwrap();
+        let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+        let base = directory.path();
         let paths = RuntimePaths::discover(Some(base), None).unwrap();
         let listener = net::UnixListener::bind(paths.control()).unwrap();
         let hello = hello_response(&paths);

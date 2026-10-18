@@ -405,8 +405,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn partial_startup_rolls_back_only_the_created_socket() {
-        let parent = tempfile::tempdir_in("/tmp").unwrap();
-        let path = Utf8PathBuf::from_path_buf(parent.path().join("helper")).unwrap();
+        let parent = camino_tempfile::tempdir_in("/tmp").unwrap();
+        let path = parent.path().join("helper");
         let paths = RuntimePaths::discover(Some(&path), None).unwrap();
         let lock = RuntimeLock::acquire(RuntimeDirectory::prepare(paths.clone()).unwrap()).unwrap();
         let mut guard = RuntimeSockets {

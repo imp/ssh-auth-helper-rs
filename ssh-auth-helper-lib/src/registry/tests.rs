@@ -4,7 +4,7 @@ use std::os::unix::net::UnixListener;
 use super::*;
 
 struct Fixture {
-    _directory: tempfile::TempDir,
+    _directory: camino_tempfile::Utf8TempDir,
     _agent: UnixListener,
     _control: UnixListener,
     base: Utf8PathBuf,
@@ -13,8 +13,8 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let directory = tempfile::tempdir_in("/tmp").unwrap();
-        let base = Utf8Path::from_path(directory.path()).unwrap().to_owned();
+        let directory = camino_tempfile::tempdir_in("/tmp").unwrap();
+        let base = directory.path().to_owned();
         let paths = RuntimePaths::discover(Some(&base), None).unwrap();
         let agent = UnixListener::bind(paths.agent()).unwrap();
         let control = UnixListener::bind(paths.control()).unwrap();
