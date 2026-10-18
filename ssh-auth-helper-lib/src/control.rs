@@ -1,4 +1,4 @@
-//! JSON-RPC readiness, basic management and bounded single-call clients.
+//! JSON-RPC readiness, basic management and a bounded reusable client.
 
 use futures_util::SinkExt;
 use futures_util::StreamExt;
@@ -117,15 +117,24 @@ async fn query<R: api::Request>(
     json::from_value(result).map_err(|_| ControlError::InvalidReply)
 }
 
-// One authenticated connection and absolute deadline. Never retry a mutating call.
-struct Client {
-    wire: Framed<net::UnixStream, JsonRpcCodec>,
+/// An authenticated management connection with sequential typed operations.
+///
+/// Connect/hello and each operation have separate two-second budgets. Transport,
+/// protocol or validation failure closes the connection; create a new client to
+/// reconnect. Cancelling an in-flight operation also closes it. No request is replayed.
+/// The daemon may close connections idle for two seconds.
+#[derive(Debug)]
+pub struct Client {
+    wire: Option<Framed<net::UnixStream, JsonRpcCodec>>,
     hello: api::HelloResponse,
-    deadline: Instant,
 }
 
 impl Client {
-    async fn connect(paths: &RuntimePaths) -> Result<Self, ControlError> {
+    /// Connect to an existing same-user daemon and validate its hello response.
+    ///
+    /// # Errors
+    /// Reports transport, peer authorization, readiness or deadline failures.
+    pub async fn connect(paths: &RuntimePaths) -> Result<Self, ControlError> {
         let deadline = Instant::now() + REQUEST_TIMEOUT;
         let stream = timeout_at(deadline, net::UnixStream::connect(paths.control())).await??;
         runtime::authorize_peer_uid(&stream, rustix::process::getuid().as_raw())?;
@@ -133,61 +142,63 @@ impl Client {
         let hello = query::<api::HelloRequest>(&mut wire, None, deadline).await?;
         validate_hello(paths, &hello)?;
         Ok(Self {
-            wire,
+            wire: Some(wire),
             hello,
-            deadline,
         })
     }
 
     async fn call<R: api::Request>(&mut self, request: R) -> Result<R::Response, ControlError> {
-        query::<R>(
-            &mut self.wire,
-            Some(json::to_value(request)?),
-            self.deadline,
-        )
-        .await
+        let deadline = Instant::now() + REQUEST_TIMEOUT;
+        let params = json::to_value(request)?;
+        // The future owns the wire until a complete reply is validated. If it is
+        // cancelled, the wire drops and the client stays disconnected.
+        let mut wire = self.wire.take().ok_or(ControlError::Disconnected)?;
+        let result = query::<R>(&mut wire, Some(params), deadline).await;
+        if matches!(&result, Ok(_) | Err(ControlError::Rpc(_))) {
+            self.wire = Some(wire);
+        }
+        result
     }
-}
 
-/// Register a socket with an already running same-user foreground daemon.
-///
-/// # Errors
-/// Reports invalid readiness, RPC rejection, transport failure or deadline expiry.
-pub async fn register(
-    paths: &RuntimePaths,
-    request: api::RegisterRequest,
-) -> Result<api::RegisterResponse, ControlError> {
-    let mut client = Client::connect(paths).await?;
-    let response = client.call(request).await?;
-    if response.registration.id.instance() != client.hello.instance {
-        return Err(ControlError::InvalidReply);
+    /// Register an original upstream socket and verify the returned instance.
+    ///
+    /// # Errors
+    /// Reports disconnection, RPC rejection, invalid response, transport or timeout.
+    pub async fn register(
+        &mut self,
+        request: api::RegisterRequest,
+    ) -> Result<api::RegisterResponse, ControlError> {
+        let response = self.call(request).await?;
+        if response.registration.id.instance() != self.hello.instance {
+            self.wire = None;
+            return Err(ControlError::InvalidReply);
+        }
+        Ok(response)
     }
-    Ok(response)
-}
 
-/// Idempotently unregister an ID; never automatically replay an uncertain call.
-///
-/// # Errors
-/// Reports readiness, RPC, transport or deadline failures.
-pub async fn unregister(
-    paths: &RuntimePaths,
-    request: api::UnregisterRequest,
-) -> Result<api::UnregisterResponse, ControlError> {
-    let mut client = Client::connect(paths).await?;
-    client.call(request).await
-}
-
-/// Inspect bounded registry metadata without probing any upstream socket.
-///
-/// # Errors
-/// Reports readiness, RPC, transport or deadline failures.
-pub async fn status(paths: &RuntimePaths) -> Result<api::StatusResponse, ControlError> {
-    let mut client = Client::connect(paths).await?;
-    let response = client.call(api::StatusRequest {}).await?;
-    if response.instance != client.hello.instance || response.endpoints != client.hello.endpoints {
-        return Err(ControlError::InvalidReply);
+    /// Idempotently unregister an ID without replaying an uncertain operation.
+    ///
+    /// # Errors
+    /// Reports disconnection, RPC rejection, invalid response, transport or timeout.
+    pub async fn unregister(
+        &mut self,
+        request: api::UnregisterRequest,
+    ) -> Result<api::UnregisterResponse, ControlError> {
+        self.call(request).await
     }
-    Ok(response)
+
+    /// Query metadata and verify the instance and endpoints against hello.
+    ///
+    /// # Errors
+    /// Reports disconnection, RPC rejection, invalid response, transport or timeout.
+    pub async fn status(&mut self) -> Result<api::StatusResponse, ControlError> {
+        let response = self.call(api::StatusRequest {}).await?;
+        if response.instance != self.hello.instance || response.endpoints != self.hello.endpoints {
+            self.wire = None;
+            return Err(ControlError::InvalidReply);
+        }
+        Ok(response)
+    }
 }
 
 fn execute(
@@ -266,6 +277,8 @@ fn internal_error(_error: json::Error) -> RpcError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ControlError {
+    #[error("control connection is closed; connect a new client")]
+    Disconnected,
     #[error("cannot encode management request: {0}")]
     Json(#[from] json::Error),
     #[error("control I/O failed: {0}")]
@@ -293,3 +306,6 @@ mod readiness_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod client_tests;

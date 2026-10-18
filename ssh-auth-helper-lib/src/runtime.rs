@@ -50,6 +50,10 @@ impl RuntimePaths {
         Self::with_dir(directory)
     }
 
+    pub async fn client(&self) -> Result<control::Client, control::ControlError> {
+        control::Client::connect(self).await
+    }
+
     fn with_dir(directory: Utf8PathBuf) -> Result<Self, RuntimeError> {
         validate_directory_syntax(&directory)?;
         let paths = Self {

@@ -128,12 +128,26 @@ Application errors carry metadata-only `error.data.kind` values:
 | -32004 | `deadline_exceeded` | Operation budget exhausted before mutation |
 | -32602 | `label_too_long` | Label exceeds 128 UTF-8 bytes |
 
-Management clients authorize the peer and validate hello before sending a
-correlated operation on that same connection. Connect, hello and the operation
-share a two-second deadline. Every return closes the connection. A missing or
-invalid response after registration/unregistration can leave an uncertain
-outcome; clients report failure and never automatically replay the mutation.
-Inspect `status` before deciding whether to issue another command.
+The library exposes `control::Client`: `Client::connect(&paths).await?` authorizes
+the peer and validates hello under a two-second connect/hello deadline. Its
+`register`, `unregister` and `status` methods reuse that authenticated connection,
+each with a fresh two-second send/receive deadline. The CLI connects for its one
+command and drops the client on return, so its two bounded phases can total four
+seconds. Standalone startup/readiness checks retain their five-second total budget.
+
+```rust
+let mut client = ssh_auth_helper_lib::control::Client::connect(&paths).await?;
+let registration = client.register(request).await?;
+let snapshot = client.status().await?;
+```
+
+Transport errors, invalid replies, timeouts and cancellation close the client
+connection; subsequent methods return `ControlError::Disconnected`. Construct a
+new client explicitly to reconnect. A correlated RPC error leaves the connection
+usable. The daemon still closes control connections idle for two seconds, so an
+idle client may need to reconnect. There are no automatic retries or keepalives.
+An unusable reply after registration/unregistration can leave an uncertain
+outcome; inspect status through a new client before deciding to repeat a mutation.
 
 Use stable Rust, selected by `rust-toolchain.toml`:
 

@@ -44,27 +44,57 @@ impl Cli {
     /// # Errors
     /// Reports invalid paths, daemon lifecycle failures or failed stdout writes.
     pub async fn run(self) -> Result<(), CliError> {
+        let paths = self.flags.runtime_paths()?;
+        self.command.run(paths).await
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Run the proxy in the foreground until SIGINT/SIGTERM.
+    Serve,
+    /// Print the planned agent socket path without creating files or starting a daemon.
+    SocketPath,
+    /// Register an original forwarded socket with an already running daemon.
+    Register(RegisterArgs),
+    /// Remove a registration; repeated cleanup succeeds.
+    Unregister {
+        id: api::RegistrationId,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect registered sockets without probing agent availability.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+impl Command {
+    async fn run(self, paths: RuntimePaths) -> Result<(), CliError> {
         use io::Write;
 
-        let paths = self.flags.runtime_paths()?;
-        match self.command {
-            Command::Serve => daemon::serve(paths).await?,
-            Command::Register(args) => {
+        match self {
+            Self::Serve => daemon::serve(paths).await?,
+            Self::Register(args) => {
                 let machine_output = args.json;
                 let request = args.into_request()?;
-                let response = control::register(&paths, request).await?;
+                let mut client = paths.client().await?;
+                let response = client.register(request).await?;
                 if machine_output {
                     write_json(json::to_value(response)?)?;
                 }
             }
-            Command::Unregister { id, json } => {
-                let response = control::unregister(&paths, api::UnregisterRequest { id }).await?;
+            Self::Unregister { id, json } => {
+                let mut client = paths.client().await?;
+                let response = client.unregister(api::UnregisterRequest { id }).await?;
                 if json {
                     write_json(json::to_value(response)?)?;
                 }
             }
-            Command::Status { json } => {
-                let response = control::status(&paths).await?;
+            Self::Status { json } => {
+                let mut client = paths.client().await?;
+                let response = client.status().await?;
                 if json {
                     write_json(json::to_value(response)?)?;
                 } else {
@@ -98,35 +128,13 @@ impl Cli {
                     )?;
                 }
             }
-            Command::SocketPath => {
+            Self::SocketPath => {
                 writeln!(io::stdout().lock(), "{}", paths.agent())?;
             }
         }
         Ok(())
     }
 }
-
-#[derive(Debug, Subcommand)]
-pub enum Command {
-    /// Run the proxy in the foreground until SIGINT/SIGTERM.
-    Serve,
-    /// Print the planned agent socket path without creating files or starting a daemon.
-    SocketPath,
-    /// Register an original forwarded socket with an already running daemon.
-    Register(RegisterArgs),
-    /// Remove a registration; repeated cleanup succeeds.
-    Unregister {
-        id: api::RegistrationId,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Inspect registered sockets without probing agent availability.
-    Status {
-        #[arg(long)]
-        json: bool,
-    },
-}
-
 #[derive(Debug, Default, Args)]
 pub struct RegisterArgs {
     /// Original forwarded agent socket; defaults to SSH_AUTH_SOCK.
@@ -142,14 +150,11 @@ pub struct RegisterArgs {
 
 impl RegisterArgs {
     fn into_request(self) -> Result<api::RegisterRequest, CliError> {
+        let label = self.label;
         let socket = self.socket.ok_or(CliError::MissingSocket)?;
-        let socket = camino::Utf8Path::from_os_str(&socket)
-            .ok_or(CliError::NonUtf8Socket)?
-            .to_owned();
-        Ok(api::RegisterRequest {
-            socket,
-            label: self.label,
-        })
+        Utf8PathBuf::from_os_string(socket)
+            .map(|socket| api::RegisterRequest { socket, label })
+            .map_err(|_| CliError::NonUtf8Socket)
     }
 }
 

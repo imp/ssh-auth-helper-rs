@@ -555,15 +555,15 @@ async fn agent_and_management_limits_are_independent_and_shutdown_releases_relay
         .await
         .unwrap();
     let _agent = Agent::start(&base.join("upstream"), b'A');
-    control::register(
-        &paths,
-        api::RegisterRequest {
+    control::Client::connect(&paths)
+        .await
+        .unwrap()
+        .register(api::RegisterRequest {
             socket: base.join("upstream"),
             label: None,
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
     let mut a = net::UnixStream::connect(paths.agent()).await.unwrap();
     assert_eq!(tag(&mut a).await, b'A');
     let mut b = net::UnixStream::connect(paths.agent()).await.unwrap();
@@ -579,7 +579,16 @@ async fn agent_and_management_limits_are_independent_and_shutdown_releases_relay
         .unwrap(),
         0
     );
-    assert_eq!(control::status(&paths).await.unwrap().active_relays, 2);
+    assert_eq!(
+        control::Client::connect(&paths)
+            .await
+            .unwrap()
+            .status()
+            .await
+            .unwrap()
+            .active_relays,
+        2
+    );
     let mut stalled = Vec::new();
     for _ in 0..MAX_CONTROL_CLIENTS {
         let mut client = net::UnixStream::connect(paths.control()).await.unwrap();
@@ -603,7 +612,16 @@ async fn agent_and_management_limits_are_independent_and_shutdown_releases_relay
     drop(stalled);
     drop(b);
     tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(control::status(&paths).await.unwrap().active_relays, 1);
+    assert_eq!(
+        control::Client::connect(&paths)
+            .await
+            .unwrap()
+            .status()
+            .await
+            .unwrap()
+            .active_relays,
+        1
+    );
     let mut replacement = net::UnixStream::connect(paths.agent()).await.unwrap();
     assert_eq!(tag(&mut replacement).await, b'A');
     shutdown.send(()).unwrap();

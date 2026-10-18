@@ -4,7 +4,7 @@ use tokio_util::codec::LinesCodec;
 
 use super::*;
 
-fn wire(stream: net::UnixStream) -> Framed<net::UnixStream, LinesCodec> {
+pub(super) fn wire(stream: net::UnixStream) -> Framed<net::UnixStream, LinesCodec> {
     Framed::new(stream, LinesCodec::new_with_max_length(MAX_FRAME_BYTES))
 }
 
@@ -22,7 +22,7 @@ fn hello_result() -> json::Value {
     })
 }
 
-async fn read_request(peer: &mut Framed<net::UnixStream, LinesCodec>) -> json::Value {
+pub(super) async fn read_request(peer: &mut Framed<net::UnixStream, LinesCodec>) -> json::Value {
     let text = timeout_at(Instant::now() + REQUEST_TIMEOUT, peer.next())
         .await
         .unwrap()
@@ -31,7 +31,7 @@ async fn read_request(peer: &mut Framed<net::UnixStream, LinesCodec>) -> json::V
     json::from_str(&text).unwrap()
 }
 
-async fn closed(peer: &mut Framed<net::UnixStream, LinesCodec>) {
+pub(super) async fn closed(peer: &mut Framed<net::UnixStream, LinesCodec>) {
     assert!(
         timeout_at(Instant::now() + REQUEST_TIMEOUT, peer.next())
             .await
@@ -258,27 +258,31 @@ async fn typed_calls_preserve_verb_specific_response_validation() {
             .unwrap();
             closed(&mut peer).await;
         });
+        let mut client = Client::connect(&paths).await.unwrap();
         let outcome = if method == api::REGISTER_METHOD {
-            register(
-                &paths,
-                api::RegisterRequest {
+            client
+                .register(api::RegisterRequest {
                     socket: "/tmp/upstream".into(),
                     label: None,
-                },
-            )
-            .await
-            .map(|_| ())
+                })
+                .await
+                .map(|_| ())
         } else {
-            status(&paths).await.map(|_| ())
+            client.status().await.map(|_| ())
         };
         if invalid {
             assert!(
                 matches!(outcome, Err(ControlError::InvalidReply)),
                 "{method}: {outcome:?}"
             );
+            assert!(matches!(
+                client.status().await,
+                Err(ControlError::Disconnected)
+            ));
         } else {
             outcome.unwrap();
         }
+        drop(client);
         fake.await.unwrap();
     }
 }
