@@ -15,6 +15,10 @@ pub use jsonrpc_uds::MAX_FRAME_BYTES;
 
 use super::*;
 
+pub use server::Server;
+
+mod server;
+
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -195,82 +199,6 @@ impl Client {
     }
 }
 
-fn execute(
-    message: RpcMessage,
-    state: &State,
-    deadline: Instant,
-) -> Result<Option<RpcMessage>, ControlError> {
-    use api::Request;
-
-    let (method, params, id) = match message {
-        RpcMessage::Request(request) => (request.method, request.params, Some(request.id)),
-        RpcMessage::Notification(notification) => (notification.method, notification.params, None),
-        RpcMessage::Invalid(error) => {
-            return Ok(Some(RpcMessage::error(RpcId::Null, error)));
-        }
-        RpcMessage::Response(_) => {
-            return Ok(Some(RpcMessage::error(
-                RpcId::Null,
-                ProtocolError::InvalidRequest,
-            )));
-        }
-    };
-    let params = params.unwrap_or_else(|| json::json!({}));
-    let result = match method.as_str() {
-        api::HelloRequest::METHOD => {
-            invoke::<api::HelloRequest>(params, |_| Ok(state.hello.clone()))
-        }
-        api::RegisterRequest::METHOD => invoke::<api::RegisterRequest>(params, |request| {
-            state.register(request, deadline).map_err(Into::into)
-        }),
-        api::UnregisterRequest::METHOD => invoke::<api::UnregisterRequest>(params, |request| {
-            state.unregister(&request.id, deadline).map_err(Into::into)
-        }),
-        api::StatusRequest::METHOD => invoke::<api::StatusRequest>(params, |_| Ok(state.status())),
-        _ => Err(RpcError::new(-32601, "Method not found")),
-    };
-    Ok(id.map(|id| RpcMessage::from_result(id, result)))
-}
-
-fn invoke<R: api::Request>(
-    params: json::Value,
-    handler: impl FnOnce(R) -> Result<R::Response, RpcError>,
-) -> Result<json::Value, RpcError> {
-    let request = json::from_value(params).map_err(|_| RpcError::new(-32602, "Invalid params"))?;
-    let response = handler(request)?;
-    json::to_value(response).map_err(internal_error)
-}
-
-fn dispatch(
-    message: RpcMessage,
-    state: &State,
-    deadline: Instant,
-) -> Result<Option<RpcMessage>, ControlError> {
-    if Instant::now() >= deadline {
-        return Err(ControlError::Timeout);
-    }
-    let reply = execute(message, state, deadline)?;
-    if Instant::now() >= deadline {
-        return Err(ControlError::Timeout);
-    }
-    Ok(reply)
-}
-
-pub(crate) async fn handle(stream: net::UnixStream, state: &State) -> Result<(), ControlError> {
-    let mut wire = Framed::new(stream, JsonRpcCodec::default());
-    while let Some(message) = timeout_at(Instant::now() + REQUEST_TIMEOUT, wire.next()).await? {
-        let reply = dispatch(message?, state, Instant::now() + REQUEST_TIMEOUT)?;
-        if let Some(reply) = reply {
-            timeout_at(Instant::now() + REQUEST_TIMEOUT, wire.send(reply)).await??;
-        }
-    }
-    Ok(())
-}
-
-fn internal_error(_error: json::Error) -> RpcError {
-    RpcError::new(-32603, "Internal error")
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum ControlError {
     #[error("control connection is closed; connect a new client")]
@@ -299,9 +227,6 @@ impl From<tokio::time::error::Elapsed> for ControlError {
 
 #[cfg(test)]
 mod readiness_tests;
-
-#[cfg(test)]
-mod tests;
 
 #[cfg(test)]
 mod client_tests;

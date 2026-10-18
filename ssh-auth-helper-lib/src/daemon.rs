@@ -64,7 +64,8 @@ pub async fn serve_until_with_config(
                 let state = Arc::clone(&state);
                 tasks.spawn(async move {
                     // Malformed or disconnected peers affect their connection only.
-                    let _ = control::handle(stream, &state).await;
+                    let server = control::Server::new(stream, state);
+                    let _ = server.handle().await;
                 });
             }
             accepted = sockets.agent_listener().accept() => {

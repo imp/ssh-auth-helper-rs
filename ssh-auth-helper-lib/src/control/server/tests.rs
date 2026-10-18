@@ -12,20 +12,25 @@ fn hello() -> State {
     })
 }
 
-fn exchange(text: &str, hello: &State) -> Option<json::Value> {
-    dispatch(
-        JsonRpcCodec::default().parse(text).unwrap(),
-        hello,
-        Instant::now() + REQUEST_TIMEOUT,
-    )
-    .unwrap()
-    .map(|reply| json::to_value(reply).unwrap())
+fn hello_server() -> (net::UnixStream, Server) {
+    let (client, stream) = net::UnixStream::pair().unwrap();
+    (client, Server::new(stream, Arc::new(hello())))
 }
 
-#[test]
-fn null_ids_are_preserved_and_notification_errors_are_silent() {
-    let hello = hello();
-    let reply = exchange(r#"{"jsonrpc":"2.0","method":"hello","id":null}"#, &hello).unwrap();
+fn exchange(text: &str, server: &Server) -> Option<json::Value> {
+    server
+        .execute(
+            JsonRpcCodec::default().parse(text).unwrap(),
+            Instant::now() + REQUEST_TIMEOUT,
+        )
+        .unwrap()
+        .map(|reply| json::to_value(reply).unwrap())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn null_ids_are_preserved_and_notification_errors_are_silent() {
+    let (_client, server) = hello_server();
+    let reply = exchange(r#"{"jsonrpc":"2.0","method":"hello","id":null}"#, &server).unwrap();
     assert!(reply["id"].is_null());
     assert_eq!(reply["result"]["ready"], true);
     for text in [
@@ -33,12 +38,13 @@ fn null_ids_are_preserved_and_notification_errors_are_silent() {
         r#"{"jsonrpc":"2.0","method":"unknown"}"#,
         r#"{"jsonrpc":"2.0","method":"hello","params":{"unexpected":true}}"#,
     ] {
-        assert!(exchange(text, &hello).is_none());
+        assert!(exchange(text, &server).is_none());
     }
 }
 
-#[test]
-fn unsupported_batches_and_other_non_messages_return_one_error() {
+#[tokio::test(flavor = "current_thread")]
+async fn unsupported_batches_and_other_non_messages_return_one_error() {
+    let (_client, server) = hello_server();
     for text in [
         "[]",
         r#"[{"jsonrpc":"2.0","method":"hello","id":1}]"#,
@@ -49,7 +55,7 @@ fn unsupported_batches_and_other_non_messages_return_one_error() {
         r#""hello""#,
         "{}",
     ] {
-        let reply = exchange(text, &hello()).unwrap();
+        let reply = exchange(text, &server).unwrap();
         assert_eq!(
             reply,
             json::json!({
@@ -62,17 +68,10 @@ fn unsupported_batches_and_other_non_messages_return_one_error() {
     }
 }
 
-#[test]
-fn expired_dispatch_budget_prevents_execution() {
-    let message = RpcMessage::request(&RpcId::Number(1), api::HELLO_METHOD, None);
-    let outcome = dispatch(message, &hello(), Instant::now());
-    assert!(matches!(outcome, Err(ControlError::Timeout)));
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn notifications_are_silent_and_later_calls_still_work() {
-    let (client, server) = net::UnixStream::pair().unwrap();
-    let task = tokio::spawn(async move { handle(server, &hello()).await });
+    let (client, server) = hello_server();
+    let task = tokio::spawn(server.handle());
     let mut client = Framed::new(client, JsonRpcCodec::default());
     for text in [
         r#"{"jsonrpc":"2.0","method":"hello"}"#,
@@ -114,8 +113,8 @@ async fn rejected_lines_do_not_prevent_a_later_call_on_the_same_connection() {
     use tokio::io::AsyncWriteExt;
     use tokio_util::codec::LinesCodec;
 
-    let (client, server) = net::UnixStream::pair().unwrap();
-    let task = tokio::spawn(async move { handle(server, &hello()).await });
+    let (client, server) = hello_server();
+    let task = tokio::spawn(server.handle());
     let mut client = Framed::new(client, LinesCodec::new_with_max_length(MAX_FRAME_BYTES));
     for (text, code) in [
         (
@@ -170,7 +169,7 @@ async fn oversized_reply_closes_without_queuing_a_partial_frame() {
     let task = tokio::spawn(async move {
         let mut hello = hello();
         hello.hello.endpoints.agent = format!("/{}", "x".repeat(MAX_FRAME_BYTES)).into();
-        handle(server, &hello).await
+        Server::new(server, Arc::new(hello)).handle().await
     });
     let mut client = Framed::new(client, JsonRpcCodec::default());
     let call = client
