@@ -9,6 +9,7 @@ use ssh_auth_helper_lib::runtime::RuntimeError;
 use ssh_auth_helper_lib::runtime::RuntimePaths;
 
 mod cli;
+mod startup;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {

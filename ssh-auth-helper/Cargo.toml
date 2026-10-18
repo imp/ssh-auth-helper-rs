@@ -7,14 +7,15 @@ description = "Command-line entry point for the forwarded SSH agent helper"
 [dependencies]
 camino.workspace = true
 clap.workspace = true
+close_fds.workspace = true
+rustix.workspace = true
 serde_json.workspace = true
 ssh-auth-helper-lib.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "process", "rt", "time"] }
 
 [dev-dependencies]
 camino-tempfile.workspace = true
-rustix.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "time"] }
 uuid = { workspace = true, features = ["v4"] }
 

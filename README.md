@@ -6,7 +6,7 @@ across remote SSH connections and long-lived tmux sessions.
 The current CLI provides path discovery and a foreground daemon with private
 sockets, singleton locking, bounded control readiness, crash recovery,
 identity-checked cleanup, socket registration/status, sticky upstream selection
-and transparent agent forwarding. Automatic detached startup is not implemented yet.
+and transparent agent forwarding. Registration starts a detached daemon when needed.
 
 ```sh
 cargo run -p ssh-auth-helper --locked -- socket-path
@@ -81,11 +81,10 @@ Parse error (-32700). Arrays inside params/results are allowed. A connection
 can carry successive individual messages; invalid input does not prevent a
 later valid call unless a framing error closes the stream. Outgoing replies obey
 the same 64 KiB limit; overflow closes the stream without sending a partial frame.
-Clients never automatically replay uncertain operations. Startup/readiness
-checks share a five-second budget.
+Clients never automatically replay uncertain operations. Automatic startup,
+readiness and registration share a five-second budget.
 
-With the foreground daemon running, register an original SSH-forwarded socket
-from another terminal:
+Register an original SSH-forwarded socket; the daemon starts if needed:
 
 ```sh
 ssh-auth-helper --runtime-dir /tmp/my-helper register --socket "$SSH_AUTH_SOCK" --label laptop --json
@@ -98,7 +97,19 @@ ssh-auth-helper --runtime-dir /tmp/my-helper unregister INSTANCE_UUID/REGISTRATI
 to a current-user-owned Unix socket. Direct paths, symlinks and hard links to
 either helper endpoint are rejected. Successful registration and unregistration
 produce no stdout unless `--json` is requested. `status` prints a concise summary
-by default. These commands require an already running daemon and do not start one.
+by default. Only `register` ensures startup; `status` and `unregister` require
+an already running daemon. `socket-path` only prints a path.
+
+Automatic startup executes the same binary in a separate session with standard
+streams redirected to `/dev/null` and extra inherited descriptors closed on exec.
+Concurrent registrations converge through the lifetime lock and authenticated
+hello handshake. A silent or incompatible control listener never authorizes
+takeover. Startup failures are reported on stderr; use foreground `serve` with
+the same runtime directory to diagnose a failed startup when no daemon is running.
+The registering command's exit or failure does not stop the daemon or undo other
+registrations. Host logout policies can still terminate detached user processes;
+use a persistent user service where required by the host. No service installation
+or SSH/shell/tmux configuration is performed automatically.
 
 Repeat registration of the same device/inode returns its original ID and
 metadata without changing its order. Replacement at the same path retires the
@@ -132,8 +143,9 @@ The library exposes `control::Client`: `Client::connect(&paths).await?` authoriz
 the peer and validates hello under a two-second connect/hello deadline. Its
 `register`, `unregister` and `status` methods reuse that authenticated connection,
 each with a fresh two-second send/receive deadline. The CLI connects for its one
-command and drops the client on return, so its two bounded phases can total four
-seconds. Standalone startup/readiness checks retain their five-second total budget.
+command and drops the client on return. Ordinary commands can use up to four
+seconds for connection and operation; `register` also allows detached startup
+within its five-second total budget. The library Client never starts a process.
 
 ```rust
 let mut client = ssh_auth_helper_lib::control::Client::connect(&paths).await?;
@@ -181,7 +193,7 @@ one identified request and checks its response under one absolute
 connect/send/receive budget. Every return closes that connection;
 there are no background client tasks or automatic request replays.
 
-To use the proxy while that foreground daemon remains running:
+To use the proxy from an SSH session:
 
 ```sh
 # Register each SSH session's original socket before switching to the stable path.
@@ -221,8 +233,8 @@ Default forwarding bounds (also returned by `status --json`):
 | Relay buffer per direction | 64 KiB |
 
 The library's `ForwardingConfig` permits validated smaller limits for embedding;
-the CLI uses these defaults. Detached startup, explicit selection, watch/events
-and SSH/tmux hook examples remain pending.
+the CLI uses these defaults. Explicit selection, watch/events and SSH/tmux hook
+examples remain pending.
 
 The selected foundation uses Camino paths, parking_lot for short shared-state
 locks, Jiff UTC timestamps, and Tokio for asynchronous I/O and monotonic
@@ -232,7 +244,12 @@ and isolated foreground agents, exercises list/sign/sticky failover, and cleans 
 
 ```sh
 cargo test -p ssh-auth-helper --locked --test real_agent -- --ignored
+cargo test -p ssh-auth-helper --locked --test detached real_agent -- --ignored
 ```
+
+Detached startup process tests require Python 3 and `ps`. They check inherited
+descriptor closure, process/session independence, concurrent registration and
+bounded failure using only isolated temporary runtime directories.
 
 Linux tests requiring real foreign ownership or peer UIDs are explicitly
 ignored in the ordinary test run. Run them only in an isolated root container

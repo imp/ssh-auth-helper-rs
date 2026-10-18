@@ -1,4 +1,4 @@
-//! CLI parsing, explicit output and foreground serving.
+//! CLI parsing, explicit output and daemon lifecycle.
 
 use clap::Args;
 use clap::Subcommand;
@@ -52,10 +52,10 @@ impl Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run the proxy in the foreground until SIGINT/SIGTERM.
-    Serve,
+    Serve(ServeArgs),
     /// Print the planned agent socket path without creating files or starting a daemon.
     SocketPath,
-    /// Register an original forwarded socket with an already running daemon.
+    /// Register an original forwarded socket, starting the daemon if needed.
     Register(RegisterArgs),
     /// Remove a registration; repeated cleanup succeeds.
     Unregister {
@@ -75,12 +75,16 @@ impl Command {
         use io::Write;
 
         match self {
-            Self::Serve => daemon::serve(paths).await?,
+            Self::Serve(args) => {
+                if args.detached {
+                    rustix::process::setsid().map_err(|error| CliError::Detach(error.into()))?;
+                }
+                daemon::serve(paths).await?;
+            }
             Self::Register(args) => {
                 let machine_output = args.json;
                 let request = args.into_request()?;
-                let mut client = paths.client().await?;
-                let response = client.register(request).await?;
+                let response = startup::register(&paths, request).await?;
                 if machine_output {
                     write_json(json::to_value(response)?)?;
                 }
@@ -135,6 +139,14 @@ impl Command {
         Ok(())
     }
 }
+
+#[derive(Debug, Default, Args)]
+pub struct ServeArgs {
+    /// Internal launch mode: establish a separate session before serving.
+    #[arg(long, hide = true)]
+    detached: bool,
+}
+
 #[derive(Debug, Default, Args)]
 pub struct RegisterArgs {
     /// Original forwarded agent socket; defaults to SSH_AUTH_SOCK.
@@ -168,6 +180,10 @@ fn write_json(value: json::Value) -> Result<(), CliError> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
+    #[error(transparent)]
+    Startup(#[from] startup::StartupError),
+    #[error("cannot detach daemon session: {0}")]
+    Detach(io::Error),
     #[error(transparent)]
     Control(#[from] control::ControlError),
     #[error("no forwarded agent socket; pass --socket or set SSH_AUTH_SOCK")]
