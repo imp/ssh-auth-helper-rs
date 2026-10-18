@@ -223,7 +223,7 @@ async fn typed_calls_preserve_verb_specific_response_validation() {
         let result = if method == api::REGISTER_METHOD {
             json::json!({"registration": {
                 "id": api::RegistrationId::new(instance, Uuid::new_v4()).unwrap(),
-                "socket": "/tmp/upstream", "registered_at": jiff::Timestamp::now(),
+                "socket": "/tmp/upstream", "registered_at": Timestamp::now(),
                 "health": "unobserved", "active_relays": 0
             }})
         } else {

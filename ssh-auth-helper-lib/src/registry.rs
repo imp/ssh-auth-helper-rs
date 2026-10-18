@@ -1,14 +1,10 @@
 //! Bounded socket-identity registry. Registration does not probe connectivity.
 
-use std::collections::VecDeque;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::MetadataExt;
 
-use jiff::Timestamp;
 use parking_lot::Mutex;
 use tokio::sync::Semaphore;
-use tokio::time::Instant;
-use uuid::Uuid;
 
 use super::*;
 
@@ -98,7 +94,7 @@ impl Candidate {
     fn retire(self, reason: api::RetirementReason) -> api::Retirement {
         api::Retirement {
             registration: self.registration,
-            retired_at: jiff::Timestamp::now(),
+            retired_at: Timestamp::now(),
             reason,
         }
     }

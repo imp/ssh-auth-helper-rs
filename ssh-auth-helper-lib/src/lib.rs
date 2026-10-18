@@ -4,6 +4,7 @@
 //! The separate CLI crate provides foreground serving, management commands and path discovery.
 //! Each agent client probes and retains one upstream connection for an opaque relay.
 
+use std::collections::VecDeque;
 use std::ffi;
 use std::fs;
 use std::io;
@@ -11,9 +12,15 @@ use std::sync::Arc;
 
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
+use jiff::Timestamp;
 use serde_json as json;
 use tokio::net;
 use tokio::task;
+use tokio::time::Duration;
+use tokio::time::Instant;
+use tokio::time::sleep_until;
+use tokio::time::timeout_at;
+use uuid::Uuid;
 
 pub use ssh_auth_helper_api as api;
 

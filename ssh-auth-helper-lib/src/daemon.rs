@@ -2,7 +2,6 @@
 
 use tokio::signal::unix::SignalKind;
 use tokio::signal::unix::signal;
-use tokio::time::Instant;
 
 use super::*;
 

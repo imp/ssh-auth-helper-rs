@@ -1,9 +1,6 @@
 //! Lifetime ownership, conservative recovery and identity-scoped socket cleanup.
 use std::io::ErrorKind;
 
-use tokio::time::Instant;
-use tokio::time::timeout_at;
-
 use super::*;
 
 const PRIVATE_FILE_MODE: fs::Mode = fs::Mode::RUSR.union(fs::Mode::WUSR);

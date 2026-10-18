@@ -2,12 +2,7 @@
 
 use futures_util::SinkExt;
 use futures_util::StreamExt;
-use tokio::time::Duration;
-use tokio::time::Instant;
-use tokio::time::sleep_until;
-use tokio::time::timeout_at;
 use tokio_util::codec::Framed;
-use uuid::Uuid;
 
 use jsonrpc_uds::JsonRpcCodec;
 use jsonrpc_uds::ProtocolError;
@@ -19,7 +14,6 @@ use jsonrpc_uds::TransportError;
 pub use jsonrpc_uds::MAX_FRAME_BYTES;
 
 use super::*;
-use api::Request;
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -206,6 +200,8 @@ fn execute(
     state: &State,
     deadline: Instant,
 ) -> Result<Option<RpcMessage>, ControlError> {
+    use api::Request;
+
     let (method, params, id) = match message {
         RpcMessage::Request(request) => (request.method, request.params, Some(request.id)),
         RpcMessage::Notification(notification) => (notification.method, notification.params, None),

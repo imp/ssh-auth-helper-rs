@@ -1,6 +1,5 @@
 //! Runtime paths, private directory preparation and daemon lifetime ownership.
 
-use std::collections::VecDeque;
 use std::os::fd::AsFd;
 use std::os::fd::BorrowedFd;
 use std::os::fd::OwnedFd;
