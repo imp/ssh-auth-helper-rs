@@ -32,20 +32,9 @@ impl Server {
     ) -> Result<Option<RpcMessage>, ControlError> {
         use api::Request;
 
-        let (method, params, id) = match message {
-            RpcMessage::Request(request) => (request.method, request.params, Some(request.id)),
-            RpcMessage::Notification(notification) => {
-                (notification.method, notification.params, None)
-            }
-            RpcMessage::Invalid(error) => {
-                return Ok(Some(RpcMessage::error(RpcId::Null, error)));
-            }
-            RpcMessage::Response(_) => {
-                return Ok(Some(RpcMessage::error(
-                    RpcId::Null,
-                    ProtocolError::InvalidRequest,
-                )));
-            }
+        let (id, method, params) = match message.decode_request() {
+            Ok(parts) => parts,
+            Err(message) => return Ok(Some(message)),
         };
         let params = params.unwrap_or_else(|| json::json!({}));
         let result = match method.as_str() {

@@ -243,6 +243,22 @@ impl RpcMessage {
         Self::Response(RpcResponse::success(id, result))
     }
 
+    pub fn decode_request(self) -> Result<(Option<RpcId>, String, Option<json::Value>), Self> {
+        match self {
+            Self::Request(RpcRequest {
+                id, method, params, ..
+            }) => Ok((Some(id), method, params)),
+            Self::Notification(RpcNotification { method, params, .. }) => {
+                Ok((None, method, params))
+            }
+            Self::Response(_response) => Err(RpcMessage::error(
+                RpcId::Null,
+                ProtocolError::InvalidRequest,
+            )),
+            Self::Invalid(error) => Err(Self::error(RpcId::Null, error)),
+        }
+    }
+
     pub fn error(id: impl Into<RpcId>, error: impl Into<RpcError>) -> Self {
         let id = id.into();
         let error = error.into();
