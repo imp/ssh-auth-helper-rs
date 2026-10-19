@@ -67,7 +67,7 @@ impl Server {
             api::StatusRequest::METHOD => {
                 Self::invoke::<api::StatusRequest>(params, |_| Ok(self.state.status()))
             }
-            _ => Err(RpcError::new(-32601, "Method not found")),
+            _ => Err(RpcError::method_not_found()),
         };
         Ok(id.map(|id| RpcMessage::from_result(id, result)))
     }
@@ -76,10 +76,9 @@ impl Server {
         params: json::Value,
         handler: impl FnOnce(R) -> Result<R::Response, RpcError>,
     ) -> Result<json::Value, RpcError> {
-        let request =
-            json::from_value(params).map_err(|_| RpcError::new(-32602, "Invalid params"))?;
+        let request = json::from_value(params).map_err(|_| RpcError::invalid_params())?;
         let response = handler(request)?;
-        json::to_value(response).map_err(|_| RpcError::new(-32603, "Internal error"))
+        json::to_value(response).map_err(|_| RpcError::internal_error())
     }
 }
 

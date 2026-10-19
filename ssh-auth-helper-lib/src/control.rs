@@ -5,7 +5,6 @@ use futures_util::StreamExt;
 use tokio_util::codec::Framed;
 
 use jsonrpc_uds::JsonRpcCodec;
-use jsonrpc_uds::ProtocolError;
 use jsonrpc_uds::RpcError;
 use jsonrpc_uds::RpcId;
 use jsonrpc_uds::RpcMessage;

@@ -62,12 +62,43 @@ pub struct RpcError {
 }
 
 impl RpcError {
+    pub const PARSE_ERROR: i32 = -32700;
+    pub const INVALID_REQUEST: i32 = -32600;
+    pub const METHOD_NOT_FOUND: i32 = -32601;
+    pub const INVALID_PARAMS: i32 = -32602;
+    pub const INTERNAL_ERROR: i32 = -32603;
+
     pub fn new(code: i32, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
             data: None,
         }
+    }
+
+    pub fn parse_error() -> Self {
+        Self::new(Self::PARSE_ERROR, "Parse error")
+    }
+
+    pub fn invalid_request() -> Self {
+        Self::new(Self::INVALID_REQUEST, "Invalid Request")
+    }
+
+    pub fn method_not_found() -> Self {
+        Self::new(Self::METHOD_NOT_FOUND, "Method not found")
+    }
+
+    pub fn invalid_params() -> Self {
+        Self::new(Self::INVALID_PARAMS, "Invalid params")
+    }
+
+    pub fn internal_error() -> Self {
+        Self::new(Self::INTERNAL_ERROR, "Internal error")
+    }
+
+    pub fn message(self, message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self { message, ..self }
     }
 }
 
@@ -261,8 +292,8 @@ pub enum ProtocolError {
 impl ProtocolError {
     pub fn into_rpc_error(self) -> RpcError {
         match self {
-            Self::Parse => RpcError::new(-32700, "Parse error"),
-            Self::InvalidRequest => RpcError::new(-32600, "Invalid Request"),
+            Self::Parse => RpcError::parse_error(),
+            Self::InvalidRequest => RpcError::invalid_request(),
         }
     }
 }
