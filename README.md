@@ -8,6 +8,10 @@ sockets, singleton locking, bounded control readiness, crash recovery,
 identity-checked cleanup, socket registration/status, sticky upstream selection
 and transparent agent forwarding. Registration starts a detached daemon when needed.
 
+For daily use, follow the [SSH, shell and tmux setup guide](docs/integration.md).
+It includes manually installed examples, readiness checks, original-socket
+recovery and tmux configuration that preserves unrelated environment updates.
+
 ```sh
 cargo run -p ssh-auth-helper --locked -- socket-path
 cargo run -p ssh-auth-helper --locked -- --runtime-dir /tmp/my-helper socket-path
@@ -233,13 +237,13 @@ Default forwarding bounds (also returned by `status --json`):
 | Relay buffer per direction | 64 KiB |
 
 The library's `ForwardingConfig` permits validated smaller limits for embedding;
-the CLI uses these defaults. Explicit selection, watch/events and SSH/tmux hook
-examples remain pending.
+the CLI uses these defaults. Explicit selection and watch/events remain pending.
 
 The selected foundation uses Camino paths, parking_lot for short shared-state
 locks, Jiff UTC timestamps, and Tokio for asynchronous I/O and monotonic
-deadlines. Live SSH/tmux acceptance remains pending. No installation step alters
-personal configuration. An opt-in OpenSSH smoke test creates only temporary keys
+deadlines. Isolated live SSH/tmux failover has been verified; host logout policy
+and destination-constrained keys require separate validation. No installation
+step alters personal configuration. An opt-in OpenSSH smoke test creates only temporary keys
 and isolated foreground agents, exercises list/sign/sticky failover, and cleans up:
 
 ```sh
@@ -250,6 +254,11 @@ cargo test -p ssh-auth-helper --locked --test detached real_agent -- --ignored
 Detached startup process tests require Python 3 and `ps`. They check inherited
 descriptor closure, process/session independence, concurrent registration and
 bounded failure using only isolated temporary runtime directories.
+
+Run the shell/tmux example checks separately with
+`python3 tests/integration_examples.py --binary "$PWD/target/debug/ssh-auth-helper"`
+after a build. They use temporary homes and private tmux servers; unavailable
+optional shells/tmux are reported as skips.
 
 Linux tests requiring real foreign ownership or peer UIDs are explicitly
 ignored in the ordinary test run. Run them only in an isolated root container
