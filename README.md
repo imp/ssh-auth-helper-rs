@@ -1,7 +1,8 @@
 # ssh-auth-helper
 
-A Rust helper under development for keeping a stable SSH agent socket usable
-across remote SSH connections and long-lived tmux sessions.
+A per-user SSH agent proxy for Linux and macOS, written in Rust. It keeps a
+stable agent socket usable across remote SSH connections and long-lived tmux
+sessions while at least one registered forwarded agent remains reachable.
 
 The current CLI provides path discovery and a foreground daemon with private
 sockets, singleton locking, bounded control readiness, crash recovery,
@@ -12,13 +13,33 @@ For daily use, follow the [SSH, shell and tmux setup guide](docs/integration.md)
 It includes manually installed examples, readiness checks, original-socket
 recovery and tmux configuration that preserves unrelated environment updates.
 
+## Commands
+
+Build from source with stable Rust using `cargo build --locked --workspace`.
+The executable is `target/debug/ssh-auth-helper`; the setup guide includes a
+manual installation command. Use `ssh-auth-helper --help` for current options.
+
+| Command | Behavior |
+| --- | --- |
+| `socket-path` | Print the stable agent path; no filesystem changes or startup |
+| `serve` | Run in the foreground until SIGINT/SIGTERM |
+| `register` | Register an original socket, starting a detached daemon if needed |
+| `unregister` | Idempotently remove an instance-qualified registration ID |
+| `status` | Inspect the running daemon without probing upstream agents |
+
+`register`, `unregister` and `status` accept `--json`. Explicit selection and
+watch/events are not implemented. `hello` is a control-protocol method, not a
+CLI subcommand.
+
 ```sh
 cargo run -p ssh-auth-helper --locked -- socket-path
 cargo run -p ssh-auth-helper --locked -- --runtime-dir /tmp/my-helper socket-path
 ```
 
+## Runtime paths and safety
+
 An explicit runtime directory takes precedence over `XDG_RUNTIME_DIR`.
-Otherwise the planned directory is `$XDG_RUNTIME_DIR/ssh-auth-helper`, or
+Otherwise the runtime directory is `$XDG_RUNTIME_DIR/ssh-auth-helper`, or
 `/tmp/ssh-auth-helper-<uid>` when that variable is absent. Path discovery makes
 no filesystem changes and does not establish that a directory is safe to use.
 Inputs must be absolute UTF-8 paths without traversal, NULs, or line breaks;
@@ -31,6 +52,8 @@ replacing them. Ancestors must be trusted; only root-owned ancestor aliases
 are accepted, and the helper directory itself cannot be a symlink. Existing
 unsafe objects are rejected without permission repair. Peer authorization
 uses kernel Unix-stream credentials and requires the same UID on both listeners.
+The stable agent endpoint is `agent.sock`; management uses the separate
+`control.sock` endpoint in the same directory.
 The daemon holds `daemon.lock` for its lifetime and leaves that file in place.
 Only the lockholder recovers owned stale sockets; any successful connection
 protects an existing listener, even if silent or incompatible.
@@ -48,6 +71,8 @@ Unexpected objects are preserved and reported. Recovery and cleanup operate
 within a same-user trust boundary; pathname checks are not atomic protection
 against a malicious process running as that same user. Runtime storage must
 be on a local filesystem.
+
+## Control protocol
 
 A local client can check readiness independently of agent availability:
 
@@ -88,6 +113,8 @@ the same 64 KiB limit; overflow closes the stream without sending a partial fram
 Clients never automatically replay uncertain operations. Automatic startup,
 readiness and registration share a five-second budget.
 
+## Registration and daemon lifecycle
+
 Register an original SSH-forwarded socket; the daemon starts if needed:
 
 ```sh
@@ -103,6 +130,8 @@ either helper endpoint are rejected. Successful registration and unregistration
 produce no stdout unless `--json` is requested. `status` prints a concise summary
 by default. Only `register` ensures startup; `status` and `unregister` require
 an already running daemon. `socket-path` only prints a path.
+Clap captures `XDG_RUNTIME_DIR` and `SSH_AUTH_SOCK` when parsing CLI options;
+library runtime discovery takes explicit inputs without reading the environment.
 
 Automatic startup executes the same binary in a separate session with standard
 streams redirected to `/dev/null` and extra inherited descriptors closed on exec.
@@ -143,6 +172,8 @@ Application errors carry metadata-only `error.data.kind` values:
 | -32004 | `deadline_exceeded` | Operation budget exhausted before mutation |
 | -32602 | `label_too_long` | Label exceeds 128 UTF-8 bytes |
 
+## Library client
+
 The library exposes `control::Client`: `Client::connect(&paths).await?` authorizes
 the peer and validates hello under a two-second connect/hello deadline. Its
 `register`, `unregister` and `status` methods reuse that authenticated connection,
@@ -165,7 +196,10 @@ idle client may need to reconnect. There are no automatic retries or keepalives.
 An unusable reply after registration/unregistration can leave an uncertain
 outcome; inspect status through a new client before deciding to repeat a mutation.
 
-Use stable Rust, selected by `rust-toolchain.toml`:
+## Workspace and development
+
+The workspace declares Rust 1.99 as its minimum version. Use the stable
+toolchain selected by `rust-toolchain.toml`:
 
 ```sh
 cargo build --locked --workspace
@@ -176,11 +210,12 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 
 The Cargo workspace has four peer packages, all inheriting shared Rust/Clippy lints:
 
-- `ssh-auth-helper`: thin executable package with CLI parsing, command dispatch,
-  runtime initialization and process output. It builds the `ssh-auth-helper` binary.
-  CLI and process-startup integration tests live here.
-- `ssh-auth-helper-lib`: core library for runtime safety, startup, supervision and
-  helper operations. It has no executable target or Clap dependency.
+- `ssh-auth-helper`: executable package with CLI parsing, command dispatch,
+  the current-thread Tokio entry point, detached process launch and output. It
+  builds the `ssh-auth-helper` binary. CLI/process integration tests live here.
+- `ssh-auth-helper-lib`: core library for runtime safety, lifetime locking,
+  daemon supervision, registry/selection, control client/server and forwarding.
+  It has no executable target, detached launcher or Clap dependency.
 - `ssh-auth-helper-api`: our helper's management API schemas, including
   `HelloRequest`/`HelloResponse`. Operation payloads use `XxxRequest`/`XxxResponse`.
 - `jsonrpc-uds`: bounded JSON-RPC parsing and serialization with typed
@@ -197,14 +232,22 @@ one identified request and checks its response under one absolute
 connect/send/receive budget. Every return closes that connection;
 there are no background client tasks or automatic request replays.
 
-To use the proxy from an SSH session:
+`RpcError` owns standard error codes and constructors; `RpcMessage::decode_request`
+extracts requests/notifications or returns an error response for rejected input.
+API schemas define wire contracts; the core library validates filesystem state
+and operation semantics. Configuration/environment parsing stays in the executable.
 
-```sh
-# Register each SSH session's original socket before switching to the stable path.
-ssh-auth-helper --runtime-dir /tmp/my-helper register --socket "$SSH_AUTH_SOCK"
-export SSH_AUTH_SOCK="$(ssh-auth-helper --runtime-dir /tmp/my-helper socket-path)"
-ssh-add -l
-```
+Implementation uses Camino paths, `camino-tempfile` for Rust fixtures,
+`parking_lot` for short shared-state locks, Jiff UTC timestamps, and Tokio for
+asynchronous I/O and monotonic deadlines. Members inherit workspace Rust/Clippy
+lints. Import one item per line and use `XxxRequest`/`XxxResponse` payload names.
+
+## Selection and forwarding
+
+Register each SSH session's original socket before selecting the stable path.
+The [setup guide](docs/integration.md) and [shell example](examples/shell-agent.sh)
+retain that original for recovery and check daemon readiness before exporting
+the proxy path.
 
 Each new client sends a bounded identities probe on a fresh upstream connection.
 A structurally valid empty identities reply is healthy. The selected upstream
@@ -237,23 +280,23 @@ Default forwarding bounds (also returned by `status --json`):
 | Relay buffer per direction | 64 KiB |
 
 The library's `ForwardingConfig` permits validated smaller limits for embedding;
-the CLI uses these defaults. Explicit selection and watch/events remain pending.
+the CLI uses these defaults.
 
-The selected foundation uses Camino paths, parking_lot for short shared-state
-locks, Jiff UTC timestamps, and Tokio for asynchronous I/O and monotonic
-deadlines. Isolated live SSH/tmux failover has been verified; host logout policy
-and destination-constrained keys require separate validation. No installation
-step alters personal configuration. An opt-in OpenSSH smoke test creates only temporary keys
-and isolated foreground agents, exercises list/sign/sticky failover, and cleans up:
+## Tests and validation limits
+
+The ordinary workspace suite covers the codec, management client/server, runtime
+security, registry, forwarding and CLI/process lifecycle. Detached startup
+process tests require Python 3 and `ps`, plus permission to create local Unix
+sockets and inspect owned processes. They use temporary runtime directories.
+
+Opt-in OpenSSH tests require `ssh-agent`, `ssh-keygen` and `ssh-add`. They create
+temporary keys and agents, exercise listing/signing and foreground sticky
+failover or automatic detached startup, and clean up:
 
 ```sh
 cargo test -p ssh-auth-helper --locked --test real_agent -- --ignored
 cargo test -p ssh-auth-helper --locked --test detached real_agent -- --ignored
 ```
-
-Detached startup process tests require Python 3 and `ps`. They check inherited
-descriptor closure, process/session independence, concurrent registration and
-bounded failure using only isolated temporary runtime directories.
 
 Run the shell/tmux example checks separately with
 `python3 tests/integration_examples.py --binary "$PWD/target/debug/ssh-auth-helper"`
@@ -265,6 +308,20 @@ ignored in the ordinary test run. Run them only in an isolated root container
 with Python 3 available:
 
 ```sh
-cargo test --locked --test runtime -- --ignored
-cargo test --locked --test startup -- --ignored
+cargo test --locked -p ssh-auth-helper-lib --lib -- --ignored
+cargo test --locked -p ssh-auth-helper-lib --test runtime -- --ignored
+cargo test --locked -p ssh-auth-helper --test startup -- --ignored
 ```
+
+Native Linux and macOS checks, both OpenSSH scenarios, six isolated Linux root
+tests, and live SSH/tmux failover have been exercised. The integration examples
+also passed private-server attachment/reattachment, attachment without forwarding,
+new-pane, restart/re-registration and rollback checks. Shell checks used Bash/zsh;
+tmux versions 3.4 and 3.8 were tested.
+
+These results do not establish compatibility with every agent extension or
+destination-constrained key policy. Destination constraints/onward forwarding,
+host logout/service-manager policies, actual account rc/X11 installation, and
+forced supervision-panic/spawn/setsid failure injection remain unverified. Tests
+do not modify personal SSH, shell or tmux configuration. Installation is manual;
+no installer or service unit is provided.

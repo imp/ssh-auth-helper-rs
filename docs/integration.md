@@ -2,7 +2,9 @@
 
 These examples are installed manually on the **remote host**. They register each
 login's original forwarded socket, then select the stable proxy for interactive
-shells and tmux. Bash, zsh and tmux 3.4 or newer are supported.
+shells and tmux. The fragments use POSIX syntax for interactive Bash/zsh and
+target tmux 3.4 or newer; tmux 3.4 and 3.8 have been tested. Fish integration is
+not provided.
 
 ## Install and choose one runtime
 
@@ -79,8 +81,9 @@ tmux show-environment -t '$0' SSH_AUTH_SOCK
 ```
 
 Keep these outputs in your own notes. No local option entries means that session
-inherits the global list; retain that inheritance on rollback. A missing environment variable may return
-a nonzero status; a leading `-SSH_AUTH_SOCK` means it is marked for removal.
+inherits the global list; retain that inheritance on rollback. A missing
+environment variable may return a nonzero status; a leading `-SSH_AUTH_SOCK`
+means it is marked for removal.
 
 After your existing `update-environment` configuration in `.tmux.conf`, add:
 
@@ -148,13 +151,21 @@ sessions or stop the shared daemon. Stopping an unused daemon is optional.
 ## Check the examples
 
 Run the isolated shell/tmux tests, optionally including the real helper timeout
-check after a build:
+check after a build from the repository root:
 
 ```sh
 python3 tests/integration_examples.py
+cargo build --locked -p ssh-auth-helper
 python3 tests/integration_examples.py --binary "$PWD/target/debug/ssh-auth-helper"
 ```
 
 The tests use temporary homes and private tmux sockets. They never install rc or
 profile files in your real account. Missing optional shells/tmux are reported as
 skips; live SSH attachment tests are recorded separately from these local checks.
+
+All 12 example checks have passed on Linux and macOS. A separate live Linux run
+used the staged scripts with real forwarded SSH connections and a private tmux
+server: attach/detach/reattach, attachment without forwarding, unrelated environment
+updates, new panes, daemon restart with saved-original re-registration, and
+rollback passed. Rc/X11 input preservation was checked with shell fixtures;
+an actual sshd-managed user rc and end-to-end X11 login have not been tested.

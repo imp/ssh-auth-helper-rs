@@ -1,8 +1,10 @@
 [package]
 name = "ssh-auth-helper-lib"
 description = "Core runtime and daemon for the forwarded SSH agent helper"
+
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 camino.workspace = true

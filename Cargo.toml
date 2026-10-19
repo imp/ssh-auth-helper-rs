@@ -5,6 +5,7 @@ members = ["jsonrpc-uds", "ssh-auth-helper", "ssh-auth-helper-api", "ssh-auth-he
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.99"
 
 [workspace.dependencies]
 bytes = "1.12"
@@ -24,8 +25,8 @@ tokio-util = { version = "0.7", features = ["codec"] }
 uuid = { version = "1.28", features = ["serde"] }
 
 jsonrpc-uds = { path = "./jsonrpc-uds" }
-ssh-auth-helper-lib = { path = "./ssh-auth-helper-lib" }
 ssh-auth-helper-api = { path = "./ssh-auth-helper-api" }
+ssh-auth-helper-lib = { path = "./ssh-auth-helper-lib" }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

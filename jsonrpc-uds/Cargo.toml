@@ -1,9 +1,10 @@
 [package]
 name = "jsonrpc-uds"
+description = "JSONRPC over Unix Domain Socket"
 
 version.workspace = true
 edition.workspace = true
-publish = false
+rust-version.workspace = true
 
 [dependencies]
 bytes.workspace = true

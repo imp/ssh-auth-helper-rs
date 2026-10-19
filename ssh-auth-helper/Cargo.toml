@@ -1,8 +1,10 @@
 [package]
 name = "ssh-auth-helper"
+description = "Command-line entry point for the forwarded SSH agent helper"
+
 version.workspace = true
 edition.workspace = true
-description = "Command-line entry point for the forwarded SSH agent helper"
+rust-version.workspace = true
 
 [dependencies]
 camino.workspace = true
